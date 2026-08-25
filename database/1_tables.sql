@@ -1,0 +1,65 @@
+CREATE DATABASE IF NOT EXISTS catms_db;
+USE catms_db;
+
+-- 1. Address Table
+CREATE TABLE Address (
+    address_id INT PRIMARY KEY AUTO_INCREMENT,
+    address_line_1 VARCHAR(150),
+    address_line_2 VARCHAR(150),
+    city VARCHAR(50),
+    province VARCHAR(50),
+    postal_code VARCHAR(10)
+);
+
+-- 2. Contact Table 
+CREATE TABLE Contact (
+    contact_id INT PRIMARY KEY AUTO_INCREMENT,
+    phone_number VARCHAR(15),
+    email VARCHAR(150)
+);
+
+-- 3. User Table
+CREATE TABLE User (
+    user_id INT PRIMARY KEY AUTO_INCREMENT,
+    address_id INT,
+    full_name VARCHAR(100),
+    NIC VARCHAR(20),
+    gender VARCHAR(10),
+    DOB DATE,
+    email VARCHAR(150),
+    contact_no VARCHAR(15),
+    Password_hash VARCHAR(255),
+    FOREIGN KEY (address_id) REFERENCES Address(address_id)
+);
+
+-- 4. Branch Table
+CREATE TABLE Branch (
+    branch_id INT PRIMARY KEY AUTO_INCREMENT,
+    branch_name VARCHAR(100),
+    district VARCHAR(50),
+    contact_id INT,
+    address_id INT,
+    FOREIGN KEY (contact_id) REFERENCES Contact(contact_id),
+    FOREIGN KEY (address_id) REFERENCES Address(address_id)
+);
+
+-- 5. Employee Table
+CREATE TABLE Employee (
+    employee_id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT,
+    branch_id INT,
+    role VARCHAR(50),
+    salary DECIMAL(10,2),
+    joined_date DATE,
+    FOREIGN KEY (user_id) REFERENCES `User`(user_id),
+    FOREIGN KEY (branch_id) REFERENCES Branch(branch_id)
+);
+
+-- 6. Doctor Table
+CREATE TABLE Doctor (
+    doctor_id INT PRIMARY KEY AUTO_INCREMENT,
+    employee_id INT,
+    room_no VARCHAR(10),
+    medical_licence_number VARCHAR(50),
+    FOREIGN KEY (employee_id) REFERENCES Employee(employee_id)
+);
