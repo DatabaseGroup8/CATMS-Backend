@@ -32,7 +32,6 @@ CREATE TABLE Branch (
     district VARCHAR(50),
     contact_id INT,
     address_id INT,
-    FOREIGN KEY (contact_id) REFERENCES Contact(contact_id),
     FOREIGN KEY (address_id) REFERENCES Address(address_id)
 );
 
@@ -44,7 +43,7 @@ CREATE TABLE Employee (
     role VARCHAR(50),
     salary DECIMAL(10,2),
     joined_date DATE,
-    FOREIGN KEY (user_id) REFERENCES `User`(user_id),
+    FOREIGN KEY (user_id) REFERENCES User(user_id),
     FOREIGN KEY (branch_id) REFERENCES Branch(branch_id)
 );
 
