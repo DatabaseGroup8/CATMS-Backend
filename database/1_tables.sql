@@ -101,3 +101,46 @@ CREATE TABLE Patient_condition(
     FOREIGN KEY (patient_id) REFERENCES Patient(patient_id), 
     FOREIGN KEY (condition_id) REFERENCES Conditions(condition_id)
 );
+
+-- 10. Specialization Table
+CREATE TABLE Specialization (
+    specialization_id INT AUTO_INCREMENT PRIMARY KEY,
+    specialization_name VARCHAR(100),
+    description TEXT
+);
+
+-- 11. Doctor_Specialization Table
+CREATE TABLE Doctor_Specialization (
+    specialization_id INT,
+    doctor_id INT,
+    PRIMARY KEY (specialization_id, doctor_id),
+    FOREIGN KEY (specialization_id) REFERENCES Specialization(specialization_id),
+    FOREIGN KEY (doctor_id) REFERENCES Doctor(doctor_id)
+);
+
+-- 12. Time_Slot Table
+CREATE TABLE Time_Slot (
+    time_slot_id INT AUTO_INCREMENT PRIMARY KEY,
+    doctor_id INT,
+    branch_id INT,
+    available_date DATE,
+    start_time TIME,
+    end_time TIME,
+    FOREIGN KEY (doctor_id) REFERENCES Doctor(doctor_id),
+    FOREIGN KEY (branch_id) REFERENCES Branch(branch_id)
+);
+
+-- 13. Appointment Table
+CREATE TABLE Appointment (
+    appointment_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
+    time_slot_id INT,
+    type VARCHAR(50),
+    status VARCHAR(50),
+    notes TEXT,
+    updated_at DATE,
+    created_at DATE,
+    FOREIGN KEY (user_id) REFERENCES User(user_id),
+    FOREIGN KEY (time_slot_id) REFERENCES Time_Slot(time_slot_id)
+);
+
