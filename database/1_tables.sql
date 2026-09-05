@@ -201,3 +201,57 @@ CREATE TABLE Treatment (
     FOREIGN KEY (medical_record_id) REFERENCES Medical_record(medical_record_id),
     FOREIGN KEY (treatment_service_code) REFERENCES Treatment_Catalogue(treatment_service_code)
 );
+
+
+-- 20. Invoice Table
+Create TABLE Invoice (
+    Invoice_id INT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id INT,
+    sub_total DECIMAL(10,2),
+    insurance_claimed_amount DECIMAL(10,2),
+    FOREIGN KEY(appointment_id) REFERENCES Appointment(appointment_id)
+);
+
+-- 21. Payment Table
+Create TABLE Payment (
+    payment_id INT AUTO_INCREMENT PRIMARY KEY,
+    Invoice_id INT,
+    patient_id INT,
+    payment_method VARCHAR(20),
+    status VARCHAR(20),
+    payment_date DATE
+    FOREIGN KEY(Invoice_id) REFERENCES Invoice(Invoice_id),
+    FOREIGN KEY(patient_id) REFERENCES Patient(patient_id)
+);
+
+-- 22. Claims Table
+Create Claims (
+    Insurance_id INT AUTO_INCREMENT PRIMARY KEY,
+    Invoice_id INT,
+    date DATE
+    FOREIGN KEY(Invoice_id) REFERENCES Invoice(Invoice_id)
+);
+
+-- 23. Insurance_Packages Table
+Create Insurance_Packages (
+    insurance_package_id INT AUTO_INCREMENT PRIMARY KEY,
+    package_name VARCHAR(50),
+    annual_name VARCHAR(50),
+    copayment_percentage DECIMAL(10,2),
+    updated_date DATE,
+    started_date DATE
+);
+
+-- 24. Insurance Table
+Create Insurance (
+    Insurance_id INT AUTO_INCREMENT PRIMARY KEY,
+    patient_id INT,
+    insurance_package_id INT,
+    updated_date DATE,
+    status VARCHAR(50),
+    started_date DATE,
+    end_date DATE,
+    FOREIGN KEY(patient_id) REFERENCES Patient(patient_id),
+    FOREIGN KEY(insurance_package_id) REFERENCES(Insurance_Packages)
+);
+
