@@ -144,3 +144,60 @@ CREATE TABLE Appointment (
     FOREIGN KEY (time_slot_id) REFERENCES Time_Slot(time_slot_id)
 );
 
+-- 14. Medical Record Table
+CREATE TABLE Medical_record (
+    medical_record_id INT AUTO_INCREMENT PRIMARY KEY,
+    chief_complaint TEXT,
+    symptoms TEXT,
+    diagnosis TEXT
+);
+
+-- 15. Medication Table
+CREATE TABLE Medication (
+    medication_id INT AUTO_INCREMENT PRIMARY KEY,
+    generic_name VARCHAR(100),
+    manufacturer VARCHAR(100),
+    form VARCHAR(50),
+    contraindications VARCHAR(255),
+    side_effects VARCHAR(255)
+);
+
+-- 16. Prescription Table
+CREATE TABLE Prescription (
+    prescription_id INT AUTO_INCREMENT PRIMARY KEY,
+    medical_record_id INT,
+    medication_id INT,
+    dosage VARCHAR(50),
+    frequency VARCHAR(50),
+    duration_days VARCHAR(50),
+    instructions TEXT,
+    FOREIGN KEY (medical_record_id) REFERENCES Medical_record(medical_record_id),
+    FOREIGN KEY (medication_id) REFERENCES Medication(medication_id)
+);
+
+-- 17. Treatment Category Table
+CREATE TABLE Treatment_Category (
+    treatment_category_id INT AUTO_INCREMENT PRIMARY KEY,
+    category_name VARCHAR(100),
+    description TEXT
+);
+
+-- 18. Treatment Catalogue Table
+CREATE TABLE Treatment_Catalogue (
+    treatment_service_code INT AUTO_INCREMENT PRIMARY KEY,
+    treatment_category_id INT,
+    treatment_name VARCHAR(100),
+    base_price DECIMAL(10, 2),
+    duration VARCHAR(50),
+    updated_date DATE,
+    FOREIGN KEY (treatment_category_id) REFERENCES Treatment_Category(treatment_category_id)
+);
+
+-- 19. Treatment Table
+CREATE TABLE Treatment (
+    treatment_id INT AUTO_INCREMENT PRIMARY KEY,
+    medical_record_id INT,
+    treatment_service_code INT,
+    FOREIGN KEY (medical_record_id) REFERENCES Medical_record(medical_record_id),
+    FOREIGN KEY (treatment_service_code) REFERENCES Treatment_Catalogue(treatment_service_code)
+);
