@@ -195,3 +195,57 @@ proc_label: BEGIN
     COMMIT;
 END //
 
+DELIMITER $$
+
+-- Procedure 1: Record Payment
+DROP PROCEDURE IF EXISTS `RecordPayment`$$
+CREATE PROCEDURE `RecordPayment`(
+    IN p_invoice_id INT,
+    IN p_user_id INT,
+    IN p_appointment_id INT,
+    IN p_payment_amount DECIMAL(10,2),
+    IN p_payment_method VARCHAR(100),
+    OUT p_payment_id INT,
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    DECLARE v_outstanding DECIMAL(10,2);
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+    
+    SET p_success = FALSE;
+    
+    START TRANSACTION;
+    
+    -- Check balance using the custom function
+    SET v_outstanding = CalculateOutstandingBalance(p_invoice_id);
+    
+    IF p_payment_amount <= 0 THEN
+        SET p_error_message = 'Payment amount must be greater than zero';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    IF p_payment_amount > v_outstanding THEN
+        SET p_error_message = 'Payment exceeds outstanding balance';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    -- Insert the payment record[cite: 1, 2]
+    INSERT INTO Payment (invoice_id, appointment_id, user_id, payment_method, status, payment_date, payment_amount)
+    VALUES (p_invoice_id, p_appointment_id, p_user_id, p_payment_method, 'Completed', CURDATE(), p_payment_amount);
+    
+    SET p_payment_id = LAST_INSERT_ID();
+    SET p_success = TRUE;
+    SET p_error_message = 'Payment recorded successfully';
+    
+    COMMIT;
+END proc_label$$
+
