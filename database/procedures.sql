@@ -249,3 +249,50 @@ proc_label: BEGIN
     COMMIT;
 END proc_label$$
 
+-- Procedure 2: Process Insurance Claim
+DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`$$
+CREATE PROCEDURE `ProcessInsuranceClaim`(
+    IN p_invoice_id INT,
+    IN p_insurance_id INT,
+    IN p_claim_amount DECIMAL(10,2),
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    DECLARE v_invoice_exists INT DEFAULT 0;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+    
+    SET p_success = FALSE;
+    START TRANSACTION;
+    
+    SELECT COUNT(*) INTO v_invoice_exists FROM Invoice WHERE invoice_id = p_invoice_id;
+    
+    IF v_invoice_exists = 0 THEN
+        SET p_error_message = 'Invoice not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    -- Log the claim[cite: 1, 2]
+    INSERT INTO Claims (insurance_id, invoice_id, date)
+    VALUES (p_insurance_id, p_invoice_id, CURDATE());
+    
+    -- Update the invoice to deduct the covered amount from what the patient owes[cite: 1, 2]
+    UPDATE Invoice 
+    SET insurance_claimed_amount = insurance_claimed_amount + p_claim_amount
+    WHERE invoice_id = p_invoice_id;
+    
+    SET p_success = TRUE;
+    SET p_error_message = 'Claim processed successfully';
+    
+    COMMIT;
+END proc_label$$
+
+DELIMITER ;
+
