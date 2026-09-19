@@ -76,8 +76,7 @@ proc_label: BEGIN
     COMMIT;
 END //
 
-
-
+-- Procedure: CreateConsultationWithDetails
 
 CREATE PROCEDURE CreateConsultationWithDetails(
     IN p_appointment_id INT,
