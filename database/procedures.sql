@@ -1,8 +1,9 @@
-
+DELIMITER //
 -- Procedure: AddMedication
 
 CREATE PROCEDURE AddMedication(
-    --IN parameters receice the raw data from backend
+    --IN parameters receive the raw data from backend
+    --MySQL automatically takes values from the backend and drop into IN parameters
     IN p_generic_name VARCHAR(100),
     IN p_manufacturer VARCHAR(100),
     IN p_form VARCHAR(50),
@@ -15,9 +16,9 @@ CREATE PROCEDURE AddMedication(
     OUT p_success BOOLEAN
 )
 proc_label: BEGIN
-    DECLARE v_duplicate_count INT DEFAULT 0;
+    DECLARE v_duplicate_count INT DEFAULT 0; --to keep track of how many identical rows already exist in the database
     
-    -- 1. The Error Handler: If anything crashes, undo the changes and report back
+    -- 1. The Error Handler: If anything crashes, undo the changes and report back(SQL version of try....catch)
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
@@ -76,6 +77,7 @@ proc_label: BEGIN
     COMMIT;
 END //
 --........................................................................................................................
+
 -- Procedure: CreateConsultationWithDetails
 
 CREATE PROCEDURE CreateConsultationWithDetails(
@@ -195,6 +197,7 @@ proc_label: BEGIN
     COMMIT;
 END //
 --...............................................................................................................................
+
 -- Procedure: AddPrescriptionWithItems
 
 CREATE PROCEDURE AddPrescriptionWithItems(
@@ -335,14 +338,14 @@ proc_label: BEGIN
     END IF;
 
     -- 6. Logical Validation: Prevent Duplicates
-    SELECT COUNT(*) INTO v_duplicate_count 
-    FROM Patient_Condition 
-    WHERE patient_id = p_patient_id AND condition_id = p_condition_id;
+    SELECT COUNT(*) INTO v_duplicate_count FROM Patient_Condition 
+    WHERE patient_id = p_patient_id 
+    AND condition_id = p_condition_id
+    AND diagnosed_date = p_diagnosed_date;
     
     IF v_duplicate_count > 0 THEN
-        SET p_error_message = 'This patient already has this condition recorded';
-        ROLLBACK;
-        LEAVE proc_label;
+        SET p_error_message = 'This patient already has this condition recorded for today';
+        ROLLBACK; LEAVE proc_label;
     END IF;
 
     -- 7. Insert the Record

@@ -1,4 +1,4 @@
-DELIMITER $$
+DELIMITER //
 
 -- Function 1: Generate Invoice Number
 DROP FUNCTION IF EXISTS `GenerateInvoiceNumber`$$
@@ -18,7 +18,7 @@ BEGIN
     SET v_invoice_number = CONCAT('INV-', DATE_FORMAT(CURDATE(), '%Y%m%d'), '-', LPAD(v_invoice_count, 4, '0'));
     
     RETURN v_invoice_number;
-END$$
+END//
 
 -- Function 2: Calculate Outstanding Balance
 DROP FUNCTION IF EXISTS `CalculateOutstandingBalance`$$
