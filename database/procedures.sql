@@ -75,7 +75,7 @@ proc_label: BEGIN
     
     COMMIT;
 END //
-
+--........................................................................................................................
 -- Procedure: CreateConsultationWithDetails
 
 CREATE PROCEDURE CreateConsultationWithDetails(
@@ -194,8 +194,8 @@ proc_label: BEGIN
 
     COMMIT;
 END //
-
--- AddPrescriptionWithItems
+--...............................................................................................................................
+-- Procedure: AddPrescriptionWithItems
 
 CREATE PROCEDURE AddPrescriptionWithItems(
     IN p_medical_record_id INT,
@@ -278,7 +278,7 @@ proc_label: BEGIN
     COMMIT;
 END;
 
-
+--......................................................................................................................................
 --Procedure: AddPatientCondition
 CREATE PROCEDURE AddPatientCondition(
     IN p_patient_id INT,
@@ -368,6 +368,7 @@ proc_label: BEGIN
     COMMIT;
 END;
 
+--..............................................................................................................
 --Procedure: AddTreatment
 CREATE PROCEDURE AddTreatment(
     IN p_medical_record_id INT,
@@ -424,7 +425,7 @@ proc_label: BEGIN
     COMMIT;
 END;
 
-
+--.................................................................................................................
 -- Procedure: Record Payment
 DROP PROCEDURE IF EXISTS `RecordPayment`$$
 CREATE PROCEDURE `RecordPayment`(
@@ -477,6 +478,7 @@ proc_label: BEGIN
     COMMIT;
 END proc_label$$
 
+--...................................................................................................................................
 -- Procedure: Process Insurance Claim
 DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`$$
 CREATE PROCEDURE `ProcessInsuranceClaim`(

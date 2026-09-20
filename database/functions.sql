@@ -47,4 +47,22 @@ BEGIN
     RETURN v_sub_total - v_insurance_claimed - v_total_paid;
 END$$
 
+--Function 3: GetConsultationDuration
+CREATE FUNCTION GetConsultationDuration(p_consultation_id INT) 
+RETURNS INT
+READS SQL DATA
+BEGIN
+    DECLARE v_duration_minutes INT;
+
+    -- Calculate the difference in minutes between end_time and start_time
+    SELECT TIMESTAMPDIFF(MINUTE, ts.start_time, ts.end_time) INTO v_duration_minutes
+    FROM Consultation_record cr
+    JOIN Appointment a ON cr.appointment_id = a.appointment_id
+    JOIN Time_Slot ts ON a.time_slot_id = ts.time_slot_id
+    WHERE cr.consultation_record_id = p_consultation_id;
+
+    -- Return the calculated duration (or 0 if not found)
+    RETURN COALESCE(v_duration_minutes, 0);
+END //
+
 DELIMITER ;
