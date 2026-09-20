@@ -225,7 +225,7 @@ Create TABLE Payment (
 );
 
 -- 22. Claims Table
-Create Claims (
+Create Table Claims (
     Insurance_id INT AUTO_INCREMENT PRIMARY KEY,
     Invoice_id INT,
     date DATE
@@ -233,7 +233,7 @@ Create Claims (
 );
 
 -- 23. Insurance_Packages Table
-Create Insurance_Packages (
+Create Table Insurance_Packages (
     insurance_package_id INT AUTO_INCREMENT PRIMARY KEY,
     package_name VARCHAR(50),
     annual_name VARCHAR(50),
@@ -243,7 +243,7 @@ Create Insurance_Packages (
 );
 
 -- 24. Insurance Table
-Create Insurance (
+Create Table Insurance (
     Insurance_id INT AUTO_INCREMENT PRIMARY KEY,
     patient_id INT,
     insurance_package_id INT,

@@ -37,7 +37,7 @@ BEGIN
     WHERE invoice_id = p_invoice_id;
     
     -- Sum all successful payments made towards this invoice
-    -- Note: Assumes a 'payment_amount' column is added to your Payment table
+    -- Note: Assumes a 'payment_amount' column is added to Payment table--There is no payment amount column
     SELECT COALESCE(SUM(payment_amount), 0) 
     INTO v_total_paid
     FROM Payment
@@ -66,3 +66,28 @@ BEGIN
 END //
 
 DELIMITER ;
+
+--Function 4: Check Doctor Availability
+DROP FUNCTION IF EXISTS IsDoctorAvailable$$
+CREATE FUNCTION IsDoctorAvailable(
+    p_doctor_id INT,
+    p_date DATE,
+    p_time TIME
+)
+RETURNS BOOLEAN
+READS SQL DATA
+BEGIN
+    DECLARE slot_available INT;
+    
+    SELECT COUNT(*) INTO slot_available
+    FROM time_slot
+    WHERE doctor_id = p_doctor_id
+    AND available_date = p_date
+    AND start_time <= p_time
+    AND end_time > p_time
+    AND is_booked = FALSE;
+    
+    RETURN slot_available > 0;
+END$$
+
+

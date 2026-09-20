@@ -529,3 +529,285 @@ END proc_label$$
 
 DELIMITER ;
 
+--...................................................................................................................................
+-- Procedure: Add timeslots to timslot table
+DROP PROCEDURE IF EXISTS `AddTimeSlot`$$
+
+CREATE DEFINER=`root`@`localhost` PROCEDURE `AddTimeSlot`(
+    IN p_doctor_id CHAR(36),
+    IN p_branch_id CHAR(36),
+    IN p_available_date DATE,
+    IN p_start_time TIME,
+    IN p_end_time TIME,
+   
+    OUT p_time_slot_id CHAR(36),
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    -- ALL DECLARE STATEMENTS MUST COME FIRST
+    DECLARE v_time_slot_id CHAR(36);
+    DECLARE v_doctor_exists INT DEFAULT 0;
+    DECLARE v_branch_exists INT DEFAULT 0;
+   
+    -- Error handler (must be declared AFTER variables but BEFORE any SET/SELECT)
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+   
+    -- NOW executable statements can start
+    -- Initialize outputs
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+    SET p_time_slot_id = NULL;
+   
+    -- Start transaction
+    START TRANSACTION;
+   
+    -- Validation: Check if doctor exists
+    SELECT COUNT(*) INTO v_doctor_exists
+    FROM doctor
+    WHERE doctor_id = p_doctor_id;
+   
+    IF v_doctor_exists = 0 THEN
+        SET p_error_message = 'Doctor not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+   
+    -- Validation: Check if branch exists and is active
+    SELECT COUNT(*) INTO v_branch_exists
+    FROM branch
+    WHERE branch_id = p_branch_id AND is_active = TRUE;
+   
+    IF v_branch_exists = 0 THEN
+        SET p_error_message = 'Branch not found or inactive';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+   
+    -- Validation: Check required fields
+    IF p_available_date IS NULL THEN
+        SET p_error_message = 'Available date is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+   
+    IF p_start_time IS NULL THEN
+        SET p_error_message = 'Start time is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+   
+    IF p_end_time IS NULL THEN
+        SET p_error_message = 'End time is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+   
+    -- Validation: Check end_time > start_time
+    IF p_end_time <= p_start_time THEN
+        SET p_error_message = 'End time must be after start time';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+   
+    -- Generate UUID
+    SET v_time_slot_id = UUID();
+   
+    -- Insert time slot
+    INSERT INTO time_slot (
+        time_slot_id, doctor_id, branch_id, available_date, 
+        is_booked, start_time, end_time
+    ) VALUES (
+        v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
+        FALSE, p_start_time, p_end_time
+    );
+   
+    -- Success
+    SET p_time_slot_id = v_time_slot_id;
+    SET p_success = TRUE;
+    SET p_error_message = 'Time slot added successfully';
+   
+    COMMIT;
+END proc_label$$
+
+--...................................................................................................................................
+-- Procedure: CreateTimeSlot
+CREATE DEFINER=`root`@`localhost` PROCEDURE `CreateTimeSlot`(
+    IN p_doctor_id INT,
+    IN p_branch_id INT,
+    IN p_available_date DATE,
+    IN p_start_time TIME,
+    IN p_end_time TIME,
+    OUT p_time_slot_id CHAR(36),
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    -- ...existing code from AddTimeSlot...
+    DECLARE v_time_slot_id INT;
+    DECLARE v_doctor_exists INT DEFAULT 0;
+    DECLARE v_branch_exists INT DEFAULT 0;
+    --If an SQL error happens while executing this block, run the error-handling code and then exit the block
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+    SET p_time_slot_id = NULL;
+    START TRANSACTION;
+    SELECT COUNT(*) INTO v_doctor_exists FROM doctor WHERE doctor_id = p_doctor_id;
+    IF v_doctor_exists = 0 THEN
+        SET p_error_message = 'Doctor not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    SELECT COUNT(*) INTO v_branch_exists FROM branch WHERE branch_id = p_branch_id AND is_active = TRUE;
+    IF v_branch_exists = 0 THEN
+        SET p_error_message = 'Branch not found or inactive';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    IF p_available_date IS NULL THEN
+        SET p_error_message = 'Available date is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    IF p_start_time IS NULL THEN
+        SET p_error_message = 'Start time is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    IF p_end_time IS NULL THEN
+        SET p_error_message = 'End time is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    IF p_end_time <= p_start_time THEN
+        SET p_error_message = 'End time must be after start time';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    SET v_time_slot_id = UUID();
+    INSERT INTO time_slot (
+        time_slot_id, doctor_id, branch_id, available_date, 
+        is_booked, start_time, end_time
+    ) VALUES (
+        v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
+        FALSE, p_start_time, p_end_time
+    );
+    SET p_time_slot_id = v_time_slot_id;
+    SET p_success = TRUE;
+    SET p_error_message = 'Time slot added successfully';
+    COMMIT;
+END proc_label$$
+
+
+--...................................................................................................................................
+-- Procedure: BookAppointment
+
+CREATE DEFINER=`root`@`localhost` PROCEDURE `BookAppointment`(
+    IN p_patient_id CHAR(36),
+    IN p_time_slot_id CHAR(36),
+    IN p_notes TEXT,
+    
+    OUT p_appointment_id CHAR(36),
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    DECLARE v_appointment_id CHAR(36);
+    DECLARE v_slot_exists INT DEFAULT 0;
+    DECLARE v_slot_booked TINYINT DEFAULT 0;
+    DECLARE v_patient_exists INT DEFAULT 0;
+    DECLARE v_slot_date DATE;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+    
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+    SET p_appointment_id = NULL;
+    
+    START TRANSACTION;
+    
+    SELECT COUNT(*) INTO v_patient_exists 
+    FROM patient 
+    WHERE patient_id = p_patient_id;
+    
+    IF v_patient_exists = 0 THEN
+        SET p_error_message = 'Patient not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    SELECT COUNT(*) INTO v_slot_exists
+    FROM time_slot 
+    WHERE time_slot_id = p_time_slot_id;
+    
+    IF v_slot_exists = 0 THEN
+        SET p_error_message = 'Time slot not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    SELECT 
+        is_booked,
+        available_date
+    INTO v_slot_booked, v_slot_date
+    FROM time_slot 
+    WHERE time_slot_id = p_time_slot_id
+    FOR UPDATE;
+    
+    IF v_slot_booked = 1 THEN
+        SET p_error_message = 'Time slot already booked';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    IF v_slot_date < CURDATE() THEN
+        SET p_error_message = 'Cannot book time slot in the past';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    SET v_appointment_id = UUID();
+    
+    UPDATE time_slot 
+    SET is_booked = 1
+    WHERE time_slot_id = p_time_slot_id;
+    
+    IF ROW_COUNT() != 1 THEN
+        SET p_error_message = 'Failed to mark time slot as booked';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    INSERT INTO appointment (appointment_id, time_slot_id, patient_id, status, notes)
+    VALUES (v_appointment_id, p_time_slot_id, p_patient_id, 'Scheduled', p_notes);
+    
+    IF ROW_COUNT() != 1 THEN
+        SET p_error_message = 'Failed to create appointment record';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    SET p_appointment_id = v_appointment_id;
+    SET p_success = TRUE;
+    SET p_error_message = 'Appointment booked successfully';
+    
+    COMMIT;
+END proc_label$$
