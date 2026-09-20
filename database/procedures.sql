@@ -195,7 +195,89 @@ proc_label: BEGIN
     COMMIT;
 END //
 
-DELIMITER $$
+-- AddPrescriptionWithItems
+
+CREATE PROCEDURE AddPrescriptionWithItems(
+    IN p_medical_record_id INT,
+    IN p_prescription_items JSON,
+    
+    OUT p_items_added INT,
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    DECLARE v_record_exists INT DEFAULT 0;
+    DECLARE v_idx INT DEFAULT 0;
+    DECLARE v_array_length INT DEFAULT 0;
+    
+    -- Extraction variables
+    DECLARE v_med_id INT;
+    DECLARE v_dosage VARCHAR(50);
+    DECLARE v_freq VARCHAR(50);
+    DECLARE v_days VARCHAR(50);
+    DECLARE v_instr VARCHAR(255);
+
+    -- 1. Error Handler
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+
+    -- 2. Initialize Outputs
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+    SET p_items_added = 0;
+
+    -- 3. Start Transaction
+    START TRANSACTION;
+
+    -- 4. Validate Medical Record
+    SELECT COUNT(*) INTO v_record_exists 
+    FROM Medical_record 
+    WHERE medical_record_id = p_medical_record_id;
+    
+    IF v_record_exists = 0 THEN
+        SET p_error_message = 'Medical record not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- 5. Validate JSON Array
+    IF p_prescription_items IS NULL OR JSON_LENGTH(p_prescription_items) = 0 THEN
+        SET p_error_message = 'Prescription items array cannot be empty';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- 6. Parse and Insert Loop
+    SET v_array_length = JSON_LENGTH(p_prescription_items);
+    
+    WHILE v_idx < v_array_length DO
+        SET v_med_id = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].medication_id')));
+        SET v_dosage = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].dosage')));
+        SET v_freq = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].frequency')));
+        SET v_days = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].duration_days')));
+        SET v_instr = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].instructions')));
+        
+        INSERT INTO Prescription (
+            medical_record_id, medication_id, dosage, frequency, duration_days, instructions
+        ) VALUES (
+            p_medical_record_id, v_med_id, v_dosage, v_freq, v_days, v_instr
+        );
+        
+        SET p_items_added = p_items_added + 1;
+        SET v_idx = v_idx + 1;
+    END WHILE;
+
+    -- 7. Success Output
+    SET p_success = TRUE;
+    SET p_error_message = 'Prescriptions added successfully';
+
+    COMMIT;
+END;
+
 
 -- Procedure 1: Record Payment
 DROP PROCEDURE IF EXISTS `RecordPayment`$$
@@ -249,7 +331,7 @@ proc_label: BEGIN
     COMMIT;
 END proc_label$$
 
--- Procedure 2: Process Insurance Claim
+-- Procedure: Process Insurance Claim
 DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`$$
 CREATE PROCEDURE `ProcessInsuranceClaim`(
     IN p_invoice_id INT,
