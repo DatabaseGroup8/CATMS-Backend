@@ -61,7 +61,7 @@ BEGIN
     FROM Consultation_record cr
     JOIN Appointment a ON cr.appointment_id = a.appointment_id
     JOIN Time_Slot ts ON a.time_slot_id = ts.time_slot_id
-    WHERE cr.consultation_record_id = p_consultation_id;
+    WHERE cr.consultation_rec_id = p_consultation_id;
 
     -- Return the calculated duration (or 0 if not found)
     RETURN COALESCE(v_duration_minutes, 0);
