@@ -75,6 +75,8 @@ CREATE TABLE Patient (
     FOREIGN KEY (registered_branch_id) REFERENCES Branch(branch_id)
 );
 
+
+
 -- 7. Condition category Table
 CREATE TABLE Condition_category( 
     condition_category_id INT AUTO_INCREMENT PRIMARY KEY, 
@@ -133,14 +135,14 @@ CREATE TABLE Time_Slot (
 -- 13. Appointment Table
 CREATE TABLE Appointment (
     appointment_id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT,
+    patient_id INT,
     time_slot_id INT,
     type VARCHAR(50),
     status VARCHAR(50),
     notes TEXT,
     updated_at DATE,
     created_at DATE,
-    FOREIGN KEY (user_id) REFERENCES User(user_id),
+    FOREIGN KEY (patient_id) REFERENCES Patient(patient_id),
     FOREIGN KEY (time_slot_id) REFERENCES Time_Slot(time_slot_id)
 );
 
@@ -219,20 +221,12 @@ Create TABLE Payment (
     patient_id INT,
     payment_method VARCHAR(20),
     status VARCHAR(20),
-    payment_date DATE
+    payment_date DATE,
     FOREIGN KEY(Invoice_id) REFERENCES Invoice(Invoice_id),
     FOREIGN KEY(patient_id) REFERENCES Patient(patient_id)
 );
 
--- 22. Claims Table
-Create Table Claims (
-    Insurance_id INT AUTO_INCREMENT PRIMARY KEY,
-    Invoice_id INT,
-    date DATE
-    FOREIGN KEY(Invoice_id) REFERENCES Invoice(Invoice_id)
-);
-
--- 23. Insurance_Packages Table
+-- 22. Insurance_Packages Table
 Create Table Insurance_Packages (
     insurance_package_id INT AUTO_INCREMENT PRIMARY KEY,
     package_name VARCHAR(50),
@@ -242,7 +236,7 @@ Create Table Insurance_Packages (
     started_date DATE
 );
 
--- 24. Insurance Table
+-- 23. Insurance Table
 Create Table Insurance (
     Insurance_id INT AUTO_INCREMENT PRIMARY KEY,
     patient_id INT,
@@ -251,7 +245,36 @@ Create Table Insurance (
     status VARCHAR(50),
     started_date DATE,
     end_date DATE,
-    FOREIGN KEY(patient_id) REFERENCES Patient(patient_id),
-    FOREIGN KEY(insurance_package_id) REFERENCES(Insurance_Packages)
+    FOREIGN KEY(patient_id) REFERENCES Patient(patient_id) ,
+    FOREIGN KEY(insurance_package_id) REFERENCES Insurance_Packages(insurance_package_id) 
 );
 
+-- 24.Claims Table
+Create Table Claims (
+    insurance_id INT,
+    invoice_id INT,
+    issued_date DATE,
+    PRIMARY KEY(insurance_id,invoice_id),
+    FOREIGN KEY(invoice_id) REFERENCES Invoice(invoice_id),
+    FOREIGN KEY(insurance_id) REFERENCES Insurance(insurance_id)
+);
+
+-- 25.Consultation Record Table
+CREATE TABLE consultation_record(
+    consultation_rec_id INT PRIMARY KEY AUTO_INCREMENT,
+    appointment_id INT NOT NULL UNIQUE,
+    medical_record_id INT ,
+    invoice_id INT,
+    FOREIGN KEY (medical_record_id) REFERENCES Medical_record(medical_record_id) ,
+    FOREIGN KEY (invoice_id) REFERENCES Invoice(invoice_id) ,
+    FOREIGN KEY (appointment_id) REFERENCES Appointment(appointment_id) 
+);
+
+-- 26.Manager Table
+CREATE TABLE Manager(
+    branch_id INT,
+    employee_id INT,
+    PRIMARY KEY(branch_id),
+    FOREIGN KEY (branch_id) REFERENCES Branch(branch_id) ,
+    FOREIGN KEY (employee_id) REFERENCES Employee(employee_id)
+);
