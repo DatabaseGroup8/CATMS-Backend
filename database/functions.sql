@@ -1,7 +1,7 @@
 DELIMITER //
 
 -- Function 1: Generate Invoice Number
-DROP FUNCTION IF EXISTS `GenerateInvoiceNumber`$$
+DROP FUNCTION IF EXISTS `GenerateInvoiceNumber`//
 CREATE FUNCTION `GenerateInvoiceNumber`()
 RETURNS VARCHAR(20)
 READS SQL DATA
@@ -21,6 +21,7 @@ BEGIN
 END//
 
 -- Function 2: Calculate Outstanding Balance
+DELIMITER $$
 DROP FUNCTION IF EXISTS `CalculateOutstandingBalance`$$
 CREATE FUNCTION `CalculateOutstandingBalance`(p_invoice_id INT)
 RETURNS DECIMAL(10,2)
@@ -48,6 +49,7 @@ BEGIN
 END$$
 
 --Function 3: GetConsultationDuration
+DELIMITER //
 CREATE FUNCTION GetConsultationDuration(p_consultation_id INT) 
 RETURNS INT
 READS SQL DATA
@@ -66,8 +68,8 @@ BEGIN
 END //
 
 DELIMITER ;
-
 --Function 4: Check Doctor Availability
+DELIMITER $$
 DROP FUNCTION IF EXISTS IsDoctorAvailable$$
 CREATE FUNCTION IsDoctorAvailable(
     p_doctor_id INT,
@@ -90,4 +92,24 @@ BEGIN
     RETURN slot_available > 0;
 END$$
 
+--Function 5: Count patient appointments
+DELIMITER $$
+DROP FUNCTION IF EXISTS CountPatientAppointments$$
+CREATE FUNCTION CountPatientAppointments(
+    p_patient_id INT,
+    p_status VARCHAR(50)
+)
+RETURNS INT
+READS SQL DATA
+BEGIN
+    DECLARE appointment_count INT;
+    
+    SELECT COUNT(*) INTO appointment_count
+    FROM Appointment
+    WHERE patient_id = p_patient_id
+    AND (p_status IS NULL OR status = p_status);
+    
+    RETURN appointment_count;
+END$$
+DELIMITER ;
 

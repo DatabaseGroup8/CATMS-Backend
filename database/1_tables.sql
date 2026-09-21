@@ -126,6 +126,7 @@ CREATE TABLE Time_Slot (
     doctor_id INT,
     branch_id INT,
     available_date DATE,
+    is_booked BOOLEAN DEFAULT FALSE,
     start_time TIME,
     end_time TIME,
     FOREIGN KEY (doctor_id) REFERENCES Doctor(doctor_id),
