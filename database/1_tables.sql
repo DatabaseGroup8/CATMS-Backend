@@ -212,6 +212,7 @@ Create TABLE Invoice (
     appointment_id INT,
     sub_total DECIMAL(10,2),
     insurance_claimed_amount DECIMAL(10,2),
+    created_at DATE DEFAULT (CURRENT_DATE);
     FOREIGN KEY(appointment_id) REFERENCES Appointment(appointment_id)
 );
 
@@ -224,7 +225,6 @@ Create TABLE Payment (
     status VARCHAR(20),
     payment_date DATE,
     payment_amount DECIMAL(10,2),
-    created_at DATE DEFAULT (CURRENT_DATE),
     FOREIGN KEY(Invoice_id) REFERENCES Invoice(Invoice_id),
     FOREIGN KEY(patient_id) REFERENCES Patient(patient_id)
 );
