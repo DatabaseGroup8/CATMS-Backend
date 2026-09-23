@@ -43,6 +43,7 @@ CREATE TABLE Employee (
     role VARCHAR(50),
     salary DECIMAL(10,2),
     joined_date DATE,
+    status VARCHAR(20) DEFAULT 'Active',
     FOREIGN KEY (user_id) REFERENCES User(user_id),
     FOREIGN KEY (branch_id) REFERENCES Branch(branch_id)
 );
