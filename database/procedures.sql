@@ -504,7 +504,7 @@ proc_label: BEGIN
     SET p_success = FALSE;
     START TRANSACTION;
     
-    SELECT COUNT(*) INTO v_invoice_exists FROM Invoice WHERE invoice_id = p_invoice_id;
+    SELECT COUNT(*) INTO v_invoice_exists FROM Invoice WHERE Invoice_id = p_invoice_id;
     
     IF v_invoice_exists = 0 THEN
         SET p_error_message = 'Invoice not found';
@@ -512,14 +512,12 @@ proc_label: BEGIN
         LEAVE proc_label;
     END IF;
     
-    -- Log the claim[cite: 1, 2]
-    INSERT INTO Claims (insurance_id, invoice_id, date)
+    INSERT INTO Claims (insurance_id, invoice_id, issued_date)
     VALUES (p_insurance_id, p_invoice_id, CURDATE());
     
-    -- Update the invoice to deduct the covered amount from what the patient owes[cite: 1, 2]
     UPDATE Invoice 
     SET insurance_claimed_amount = insurance_claimed_amount + p_claim_amount
-    WHERE invoice_id = p_invoice_id;
+    WHERE Invoice_id = p_invoice_id;
     
     SET p_success = TRUE;
     SET p_error_message = 'Claim processed successfully';
@@ -528,7 +526,6 @@ proc_label: BEGIN
 END proc_label$$
 
 DELIMITER ;
-
 --...................................................................................................................................
 -- Procedure: Add timeslots to timslot table
 DROP PROCEDURE IF EXISTS `AddTimeSlot`$$
@@ -811,3 +808,53 @@ proc_label: BEGIN
     
     COMMIT;
 END proc_label$$
+
+DELIMITER //
+
+    --Procedure Generate Invoice--
+DROP PROCEDURE IF EXISTS GenerateInvoice //
+
+CREATE PROCEDURE GenerateInvoice(
+    IN p_appointment_id INT,
+    OUT p_invoice_id INT,
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+    DECLARE v_appointment_exists INT DEFAULT 0;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+    
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+    
+    START TRANSACTION;
+    
+    -- Verify the appointment exists and is marked as Completed
+    SELECT COUNT(*) INTO v_appointment_exists 
+    FROM Appointment 
+    WHERE appointment_id = p_appointment_id AND status = 'Completed';
+    
+    IF v_appointment_exists = 0 THEN
+        SET p_error_message = 'Cannot generate invoice: Appointment not completed';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+    
+    -- Insert the blank invoice so billing triggers can populate the sub_total later
+    INSERT INTO Invoice (appointment_id, sub_total, insurance_claimed_amount)
+    VALUES (p_appointment_id, 0.00, 0.00);
+    
+    SET p_invoice_id = LAST_INSERT_ID();
+    SET p_success = TRUE;
+    SET p_error_message = 'Invoice generated successfully';
+    
+    COMMIT;
+END //
+
+DELIMITER ;
