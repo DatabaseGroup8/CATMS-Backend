@@ -154,6 +154,9 @@ proc_label: BEGIN
     -- 7. Update Appointment Status
     UPDATE Appointment SET status = 'Completed' WHERE appointment_id = p_appointment_id;
 
+    INSERT INTO Invoice (appointment_id, sub_total, insurance_claimed_amount)
+    VALUES (p_appointment_id, 0.00, 0.00);
+
     -- 8. Parse and Insert Treatments
     IF p_treatments IS NOT NULL AND JSON_LENGTH(p_treatments) > 0 THEN
         SET v_array_length = JSON_LENGTH(p_treatments);
@@ -471,8 +474,8 @@ proc_label: BEGIN
     END IF;
     
     -- Insert the payment record[cite: 1, 2]
-    INSERT INTO Payment (invoice_id, appointment_id, user_id, payment_method, status, payment_date, payment_amount)
-    VALUES (p_invoice_id, p_appointment_id, p_user_id, p_payment_method, 'Completed', CURDATE(), p_payment_amount);
+    INSERT INTO Payment (Invoice_id, patient_id, payment_method, status, payment_date, payment_amount)
+    VALUES (p_invoice_id, p_user_id, p_payment_method, 'Completed', CURDATE(), p_payment_amount);
     
     SET p_payment_id = LAST_INSERT_ID();
     SET p_success = TRUE;
@@ -537,13 +540,12 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `AddTimeSlot`(
     IN p_start_time TIME,
     IN p_end_time TIME,
    
-    OUT p_time_slot_id CHAR(36),
+    OUT p_time_slot_id INT,
     OUT p_error_message VARCHAR(255),
     OUT p_success BOOLEAN
 )
 proc_label: BEGIN
     -- ALL DECLARE STATEMENTS MUST COME FIRST
-    DECLARE v_time_slot_id CHAR(36);
     DECLARE v_doctor_exists INT DEFAULT 0;
     DECLARE v_branch_exists INT DEFAULT 0;
    
@@ -613,12 +615,9 @@ proc_label: BEGIN
         LEAVE proc_label;
     END IF;
    
-    -- Generate UUID
-    SET v_time_slot_id = UUID();
-   
     -- Insert time slot
     INSERT INTO time_slot (
-        time_slot_id, doctor_id, branch_id, available_date, 
+        doctor_id, branch_id, available_date, 
         is_booked, start_time, end_time
     ) VALUES (
         v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
@@ -626,7 +625,7 @@ proc_label: BEGIN
     );
    
     -- Success
-    SET p_time_slot_id = v_time_slot_id;
+    SET p_time_slot_id = LAST_INSERT_ID();
     SET p_success = TRUE;
     SET p_error_message = 'Time slot added successfully';
    
@@ -713,11 +712,11 @@ END proc_label$$
 -- Procedure: BookAppointment
 
 CREATE DEFINER=`root`@`localhost` PROCEDURE `BookAppointment`(
-    IN p_patient_id CHAR(36),
-    IN p_time_slot_id CHAR(36),
+    IN p_patient_id INT,
+    IN p_time_slot_id INT,
     IN p_notes TEXT,
     
-    OUT p_appointment_id CHAR(36),
+    OUT p_appointment_id INT,
     OUT p_error_message VARCHAR(255),
     OUT p_success BOOLEAN
 )
@@ -781,7 +780,6 @@ proc_label: BEGIN
         LEAVE proc_label;
     END IF;
     
-    SET v_appointment_id = UUID();
     
     UPDATE time_slot 
     SET is_booked = 1
@@ -794,7 +792,7 @@ proc_label: BEGIN
     END IF;
     
     INSERT INTO appointment (appointment_id, time_slot_id, patient_id, status, notes)
-    VALUES (v_appointment_id, p_time_slot_id, p_patient_id, 'Scheduled', p_notes);
+    VALUES (p_time_slot_id, p_patient_id, 'Scheduled', p_notes);
     
     IF ROW_COUNT() != 1 THEN
         SET p_error_message = 'Failed to create appointment record';
@@ -802,7 +800,7 @@ proc_label: BEGIN
         LEAVE proc_label;
     END IF;
     
-    SET p_appointment_id = v_appointment_id;
+    SET p_appointment_id = LAST_INSERT_ID();
     SET p_success = TRUE;
     SET p_error_message = 'Appointment booked successfully';
     
