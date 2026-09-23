@@ -856,3 +856,481 @@ proc_label: BEGIN
 END //
 
 DELIMITER ;
+
+--...................................................................................................................................
+-- Procedure: AddPatientInsurance
+DELIMITER //
+
+CREATE PROCEDURE AddPatientInsurance(
+    IN p_patient_id INT,
+    IN p_insurance_package_id INT,
+    IN p_start_date DATE,
+    IN p_end_date DATE,
+    IN p_status VARCHAR(50),
+
+    OUT p_insurance_id INT,
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+
+    DECLARE v_patient_exists INT DEFAULT 0;
+    DECLARE v_package_exists INT DEFAULT 0;
+    DECLARE v_duplicate_exists INT DEFAULT 0;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success = FALSE;
+        SET p_insurance_id = NULL;
+    END;
+
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+    SET p_insurance_id = NULL;
+
+    START TRANSACTION;
+
+    -- Check patient
+    SELECT COUNT(*)
+    INTO v_patient_exists
+    FROM Patient
+    WHERE patient_id = p_patient_id;
+
+    IF v_patient_exists = 0 THEN
+        SET p_error_message = 'Patient not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check insurance package
+    SELECT COUNT(*)
+    INTO v_package_exists
+    FROM Insurance_Packages
+    WHERE insurance_package_id = p_insurance_package_id;
+
+    IF v_package_exists = 0 THEN
+        SET p_error_message = 'Insurance package not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check required dates
+    IF p_start_date IS NULL THEN
+        SET p_error_message = 'Start date is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    IF p_end_date IS NULL THEN
+        SET p_error_message = 'End date is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check dates
+    IF p_end_date <= p_start_date THEN
+        SET p_error_message = 'End date must be after start date';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check duplicate insurance
+    SELECT COUNT(*)
+    INTO v_duplicate_exists
+    FROM Insurance
+    WHERE patient_id = p_patient_id
+      AND insurance_package_id = p_insurance_package_id;
+
+    IF v_duplicate_exists > 0 THEN
+        SET p_error_message = 'Insurance package already assigned to this patient';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Insert insurance
+    INSERT INTO Insurance (
+        patient_id,
+        insurance_package_id,
+        status,
+        started_date,
+        end_date,
+        updated_date
+    )
+    VALUES (
+        p_patient_id,
+        p_insurance_package_id,
+        COALESCE(p_status, 'Pending'),
+        p_start_date,
+        p_end_date,
+        CURRENT_DATE
+    );
+
+    -- Get AUTO_INCREMENT ID
+    SET p_insurance_id = LAST_INSERT_ID();
+
+    SET p_success = TRUE;
+    SET p_error_message = 'Patient insurance added successfully';
+
+    COMMIT;
+
+END proc_label //
+
+DELIMITER ;
+
+--...................................................................................................................................
+-- Procedure: AddClaim
+
+DELIMITER //
+
+CREATE PROCEDURE AddClaim(
+    IN p_invoice_id INT,
+    IN p_insurance_id INT,
+
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+
+    DECLARE v_invoice_exists INT DEFAULT 0;
+    DECLARE v_insurance_exists INT DEFAULT 0;
+    DECLARE v_claim_exists INT DEFAULT 0;
+
+    DECLARE v_patient_id INT;
+    DECLARE v_sub_total DECIMAL(10,2);
+    DECLARE v_insurance_amount DECIMAL(10,2);
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
+
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+
+    -- Initialize
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+
+    START TRANSACTION;
+
+    -- Check invoice
+    SELECT COUNT(*)
+    INTO v_invoice_exists
+    FROM Invoice
+    WHERE Invoice_id = p_invoice_id;
+
+    IF v_invoice_exists = 0 THEN
+        SET p_error_message = 'Invoice not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Get patient and invoice amount
+    SELECT
+        a.patient_id,
+        i.sub_total
+    INTO
+        v_patient_id,
+        v_sub_total
+    FROM Invoice i
+    JOIN Appointment a
+        ON i.appointment_id = a.appointment_id
+    WHERE i.Invoice_id = p_invoice_id;
+
+    -- Check insurance
+    SELECT COUNT(*)
+    INTO v_insurance_exists
+    FROM Insurance
+    WHERE Insurance_id = p_insurance_id
+      AND patient_id = v_patient_id
+      AND status = 'Active'
+      AND started_date <= CURRENT_DATE
+      AND end_date >= CURRENT_DATE;
+
+    IF v_insurance_exists = 0 THEN
+        SET p_error_message =
+            'Valid active insurance not found for patient';
+
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check whether claim already exists
+    SELECT COUNT(*)
+    INTO v_claim_exists
+    FROM Claims
+    WHERE insurance_id = p_insurance_id
+      AND invoice_id = p_invoice_id;
+
+    IF v_claim_exists > 0 THEN
+        SET p_error_message =
+            'Claim already exists for this invoice and insurance';
+
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Calculate insurance claim amount
+    SET v_insurance_amount = v_sub_total;
+
+    -- Insert claim
+    INSERT INTO Claims (
+        insurance_id,
+        invoice_id,
+        issued_date
+    )
+    VALUES (
+        p_insurance_id,
+        p_invoice_id,
+        CURRENT_DATE
+    );
+
+    -- Update invoice
+    UPDATE Invoice
+    SET insurance_claimed_amount = v_insurance_amount
+    WHERE Invoice_id = p_invoice_id;
+
+    SET p_success = TRUE;
+    SET p_error_message = 'Claim added successfully';
+
+    COMMIT;
+
+END proc_label //
+
+DELIMITER ;
+--...................................................................................................................................
+-- Procedure: GetStaffByBranch
+DELIMITER //
+
+CREATE PROCEDURE GetStaffByBranch(
+    IN p_branch_name VARCHAR(100),
+    IN p_role VARCHAR(50),
+    IN p_active_only BOOLEAN,
+    IN p_limit INT,
+    IN p_offset INT
+)
+proc_label: BEGIN
+
+    DECLARE v_branch_id INT;
+    DECLARE v_total_count INT DEFAULT 0;
+
+    -- Find branch
+    SELECT branch_id
+    INTO v_branch_id
+    FROM Branch
+    WHERE branch_name = TRIM(p_branch_name)
+    LIMIT 1;
+
+    -- Check branch
+    IF v_branch_id IS NULL THEN
+
+        SELECT
+            FALSE AS success,
+            'Branch not found' AS error_message,
+            0 AS total_count;
+
+        LEAVE proc_label;
+    END IF;
+
+    -- Count staff
+    SELECT COUNT(*)
+    INTO v_total_count
+    FROM Employee e
+    JOIN User u
+        ON e.user_id = u.user_id
+    WHERE e.branch_id = v_branch_id
+      AND (p_role IS NULL OR p_role = '' OR e.role = p_role)
+      AND (
+            p_active_only = FALSE
+            OR e.status = 'Active'
+          );
+
+    -- Return staff
+    SELECT
+        TRUE AS success,
+        'Staff retrieved successfully' AS message,
+        v_total_count AS total_count,
+
+        e.employee_id,
+        e.branch_id,
+        e.role,
+        e.salary,
+        e.joined_date,
+        e.status,
+
+        u.user_id,
+        u.full_name,
+        u.NIC,
+        u.gender,
+        u.DOB,
+        u.email,
+        u.contact_no,
+
+        b.branch_name,
+
+        a.address_line_1,
+        a.address_line_2,
+        a.city,
+        a.province,
+        a.postal_code
+
+    FROM Employee e
+
+    JOIN User u ON e.user_id = u.user_id
+
+    JOIN Branch b ON e.branch_id = b.branch_id
+
+    LEFT JOIN Address a ON u.address_id = a.address_id
+
+    WHERE e.branch_id = v_branch_id
+
+      AND (
+            p_role IS NULL
+            OR p_role = ''
+            OR e.role = p_role
+          )
+
+      AND (
+            p_active_only = FALSE
+            OR e.status = 'Active'
+          )
+
+    ORDER BY u.full_name
+
+    LIMIT p_limit OFFSET p_offset;
+
+END proc_label //
+
+DELIMITER ;
+
+--...................................................................................................................................
+-- Procedure: UpdateStaffSalary
+DELIMITER //
+
+CREATE PROCEDURE UpdateStaffSalary(
+    IN p_employee_id INT,
+    IN p_new_salary DECIMAL(10,2),
+
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+
+    DECLARE v_employee_exists INT DEFAULT 0;
+    DECLARE v_current_salary DECIMAL(10,2) DEFAULT 0.00;
+
+    -- Error handler
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
+
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+
+    -- Initialize output values
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+
+    -- Start transaction
+    START TRANSACTION;
+
+    -- Validate salary
+    IF p_new_salary IS NULL THEN
+        SET p_error_message = 'New salary is required';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    IF p_new_salary < 0 THEN
+        SET p_error_message = 'Salary cannot be negative';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check employee
+    SELECT COUNT(*), COALESCE(MAX(salary), 0.00)
+    INTO v_employee_exists, v_current_salary
+    FROM Employee
+    WHERE employee_id = p_employee_id;
+
+    IF v_employee_exists = 0 THEN
+        SET p_error_message = 'Employee does not exist';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Update salary
+    UPDATE Employee
+    SET salary = p_new_salary
+    WHERE employee_id = p_employee_id;
+
+    -- Success
+    SET p_success = TRUE;
+    SET p_error_message = 'Staff salary updated successfully';
+
+    COMMIT;
+
+END proc_label //
+
+DELIMITER ;
+
+--...................................................................................................................................
+-- Procedure: DeactiveStaff
+
+DELIMITER //
+
+CREATE PROCEDURE DeactivateStaff(
+    IN p_employee_id INT,
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc_label: BEGIN
+
+    DECLARE v_employee_exists INT DEFAULT 0;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
+
+        ROLLBACK;
+        SET p_success = FALSE;
+    END;
+
+    SET p_success = FALSE;
+    SET p_error_message = NULL;
+
+    START TRANSACTION;
+
+    -- Check whether employee exists and is currently active
+    SELECT COUNT(*)
+    INTO v_employee_exists
+    FROM Employee
+    WHERE employee_id = p_employee_id
+      AND status = 'Active';
+
+    IF v_employee_exists = 0 THEN
+        SET p_error_message = 'Employee not found or already inactive';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Deactivate employee
+    UPDATE Employee
+    SET status = 'Inactive'
+    WHERE employee_id = p_employee_id;
+
+    SET p_success = TRUE;
+    SET p_error_message = 'Staff member deactivated successfully';
+
+    COMMIT;
+
+END proc_label //
+
+DELIMITER ;

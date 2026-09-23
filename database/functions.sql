@@ -113,3 +113,47 @@ BEGIN
 END$$
 DELIMITER ;
 
+--Function 6:Calculate Insurance Coverage
+DELIMITER //
+
+CREATE FUNCTION CaculateInsuranceCoverage(
+    p_amount DECIMAL(10,2),
+    p_copayment_percentage DECIMAL(10,2)
+)
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN
+
+    RETURN ROUND(p_amount * (100 - p_copayment_percentage) / 100,2);
+
+END //
+DELIMITER ;
+
+--Function 7:IsInsuranceActive
+DELIMITER //
+
+CREATE FUNCTION IsInsuranceActive(
+    p_insurance_id INT
+)
+RETURNS BOOLEAN
+READS SQL DATA
+BEGIN
+
+    DECLARE v_active BOOLEAN DEFAULT FALSE;
+
+    SELECT
+        (
+            status = 'Active'
+            AND started_date <= CURDATE()
+            AND (end_date IS NULL OR end_date >= CURDATE())
+        )
+    INTO v_active
+    FROM Insurance
+    WHERE Insurance_id = p_insurance_id;
+
+    RETURN COALESCE(v_active, FALSE);
+
+END //
+
+DELIMITER ;
+
