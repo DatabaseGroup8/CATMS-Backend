@@ -212,7 +212,7 @@ Create TABLE Invoice (
     appointment_id INT,
     sub_total DECIMAL(10,2),
     insurance_claimed_amount DECIMAL(10,2),
-    created_at DATE DEFAULT (CURRENT_DATE);
+    created_at DATE DEFAULT (CURRENT_DATE),
     FOREIGN KEY(appointment_id) REFERENCES Appointment(appointment_id)
 );
 
