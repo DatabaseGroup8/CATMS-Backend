@@ -12,7 +12,7 @@ BEGIN
     -- Count invoices created today to append a daily sequence
     SELECT COUNT(*) + 1 INTO v_invoice_count
     FROM Invoice 
-    WHERE DATE(date) = CURDATE(); 
+    WHERE created_at = CURDATE(); 
     
     -- Format: INV-20260919-0001
     SET v_invoice_number = CONCAT('INV-', DATE_FORMAT(CURDATE(), '%Y%m%d'), '-', LPAD(v_invoice_count, 4, '0'));
