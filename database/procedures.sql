@@ -200,9 +200,11 @@ proc_label: BEGIN
 
     COMMIT;
 END //
+DELIMITER;
 --...............................................................................................................................
 
 -- Procedure: AddPrescriptionWithItems
+DELIMITER //
 
 CREATE PROCEDURE AddPrescriptionWithItems(
     IN p_medical_record_id INT,
@@ -283,10 +285,12 @@ proc_label: BEGIN
     SET p_error_message = 'Prescriptions added successfully';
 
     COMMIT;
-END;
-
+END //
+DELIMITER;
 --......................................................................................................................................
 --Procedure: AddPatientCondition
+DELIMITER //
+
 CREATE PROCEDURE AddPatientCondition(
     IN p_patient_id INT,
     IN p_condition_id INT,
@@ -373,10 +377,12 @@ proc_label: BEGIN
     SET p_error_message = 'Patient condition recorded successfully';
 
     COMMIT;
-END;
-
+END//
+DELIMITER;
 --..............................................................................................................
 --Procedure: AddTreatment
+DELIMITER //
+
 CREATE PROCEDURE AddTreatment(
     IN p_medical_record_id INT,
     IN p_treatment_service_code INT,
@@ -430,10 +436,13 @@ proc_label: BEGIN
     SET p_error_message = 'Treatment added successfully';
 
     COMMIT;
-END;
+END //
+DELIMITER;
 
 --.................................................................................................................
 -- Procedure: Record Payment
+DELIMITER //
+
 DROP PROCEDURE IF EXISTS `RecordPayment`$$
 CREATE PROCEDURE `RecordPayment`(
     IN p_invoice_id INT,
@@ -483,10 +492,13 @@ proc_label: BEGIN
     SET p_error_message = 'Payment recorded successfully';
     
     COMMIT;
-END proc_label$$
+END proc_label//
+DELIMITER;
 
 --...................................................................................................................................
 -- Procedure: Process Insurance Claim
+DELIMITER //
+
 DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`$$
 CREATE PROCEDURE `ProcessInsuranceClaim`(
     IN p_invoice_id INT,
@@ -527,11 +539,12 @@ proc_label: BEGIN
     SET p_error_message = 'Claim processed successfully';
     
     COMMIT;
-END proc_label$$
-
+END proc_label//
 DELIMITER ;
 --...................................................................................................................................
 -- Procedure: Add timeslots to timslot table
+
+DELIMITER //
 DROP PROCEDURE IF EXISTS `AddTimeSlot`$$
 
 CREATE DEFINER=`root`@`localhost` PROCEDURE `AddTimeSlot`(
@@ -631,10 +644,12 @@ proc_label: BEGIN
     SET p_error_message = 'Time slot added successfully';
    
     COMMIT;
-END proc_label$$
+END proc_label//
+DELIMITER;
 
 --...................................................................................................................................
 -- Procedure: CreateTimeSlot
+DELIMITER //
 CREATE DEFINER=`root`@`localhost` PROCEDURE `CreateTimeSlot`(
     IN p_doctor_id INT,
     IN p_branch_id INT,
@@ -706,11 +721,13 @@ proc_label: BEGIN
     SET p_success = TRUE;
     SET p_error_message = 'Time slot added successfully';
     COMMIT;
-END proc_label$$
+END proc_label//
+DELIMITER;
 
 
 --...................................................................................................................................
 -- Procedure: BookAppointment
+DELIMITER //
 
 CREATE DEFINER=`root`@`localhost` PROCEDURE `BookAppointment`(
     IN p_patient_id INT,
@@ -806,8 +823,10 @@ proc_label: BEGIN
     SET p_error_message = 'Appointment booked successfully';
     
     COMMIT;
-END proc_label$$
+END proc_label//
+DELIMITER;
 
+--...................................................................................................................
 DELIMITER //
 
     --Procedure Generate Invoice--
