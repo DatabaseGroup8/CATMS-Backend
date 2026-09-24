@@ -79,6 +79,7 @@ END //
 --........................................................................................................................
 
 -- Procedure: CreateConsultationWithDetails
+DELIMITER //
 
 CREATE PROCEDURE CreateConsultationWithDetails(
     IN p_appointment_id INT,
