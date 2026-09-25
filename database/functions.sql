@@ -157,3 +157,36 @@ END //
 
 DELIMITER ;
 
+--Function 8:Check email for valid format
+DELIMITER $$
+
+DROP FUNCTION IF EXISTS IsValidEmail$$
+CREATE FUNCTION IsValidEmail(p_email VARCHAR(255))
+RETURNS BOOLEAN
+DETERMINISTIC
+BEGIN
+    IF p_email IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    RETURN p_email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$';
+END$$
+
+DELIMITER ;
+
+--Function 9: Check the patient's Age
+DELIMITER $$
+
+DROP FUNCTION IF EXISTS CalculateAge$$
+CREATE FUNCTION CalculateAge(p_dob DATE)
+RETURNS INT
+DETERMINISTIC
+BEGIN
+    IF p_dob IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    RETURN TIMESTAMPDIFF(YEAR, p_dob, CURDATE());
+END$$
+
+DELIMITER ;
