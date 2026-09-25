@@ -1354,3 +1354,532 @@ proc_label: BEGIN
 END proc_label //
 
 DELIMITER ;
+
+--...............................................................................................................................
+--Procedure : Register Employee
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS RegisterEmployee$$
+
+CREATE PROCEDURE RegisterEmployee(
+    IN p_address_line_1 VARCHAR(150),
+    IN p_address_line_2 VARCHAR(150),
+    IN p_city VARCHAR(50),
+    IN p_province VARCHAR(50),
+    IN p_postal_code VARCHAR(10),
+
+    IN p_full_name VARCHAR(100),
+    IN p_NIC VARCHAR(20),
+    IN p_gender VARCHAR(10),
+    IN p_DOB DATE,
+    IN p_email VARCHAR(150),
+    IN p_contact_no VARCHAR(15),
+    IN p_password_hash VARCHAR(255),
+
+    IN p_branch_id INT,
+    IN p_role VARCHAR(50),
+    IN p_salary DECIMAL(10,2),
+    IN p_joined_date DATE,
+
+    OUT p_employee_id INT,
+    OUT p_user_id INT,
+    OUT p_success BOOLEAN,
+    OUT p_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_address_id INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_employee_id = NULL;
+        SET p_user_id = NULL;
+        SET p_success = FALSE;
+        SET p_message = 'Employee registration failed due to a database error.';
+    END;
+
+    SET p_employee_id = NULL;
+    SET p_user_id = NULL;
+    SET p_success = FALSE;
+    SET p_message = NULL;
+
+    IF NOT IsValidEmail(p_email) THEN
+        SET p_message = 'Invalid email address.';
+
+    ELSEIF p_full_name IS NULL OR TRIM(p_full_name) = '' THEN
+        SET p_message = 'Full name is required.';
+
+    ELSEIF p_password_hash IS NULL OR TRIM(p_password_hash) = '' THEN
+        SET p_message = 'Password is required.';
+
+    ELSEIF EXISTS (
+        SELECT 1 FROM User WHERE email = p_email
+    ) THEN
+        SET p_message = 'A user with this email already exists.';
+
+    ELSEIF p_NIC IS NOT NULL AND EXISTS (
+        SELECT 1 FROM User WHERE NIC = p_NIC
+    ) THEN
+        SET p_message = 'A user with this NIC already exists.';
+
+    ELSEIF NOT EXISTS (
+        SELECT 1 FROM Branch WHERE branch_id = p_branch_id
+    ) THEN
+        SET p_message = 'Branch does not exist.';
+
+    ELSE
+
+        START TRANSACTION;
+
+        -- Create address
+        INSERT INTO Address (
+            address_line_1,
+            address_line_2,
+            city,
+            province,
+            postal_code
+        )
+        VALUES (
+            p_address_line_1,
+            p_address_line_2,
+            p_city,
+            p_province,
+            p_postal_code
+        );
+
+        SET v_address_id = LAST_INSERT_ID();
+
+        -- Create user
+        INSERT INTO User (
+            address_id,
+            full_name,
+            NIC,
+            gender,
+            DOB,
+            email,
+            contact_no,
+            Password_hash
+        )
+        VALUES (
+            v_address_id,
+            p_full_name,
+            p_NIC,
+            p_gender,
+            p_DOB,
+            p_email,
+            p_contact_no,
+            p_password_hash
+        );
+
+        SET p_user_id = LAST_INSERT_ID();
+
+        -- Create employee
+        INSERT INTO Employee (
+            user_id,
+            branch_id,
+            role,
+            salary,
+            joined_date
+        )
+        VALUES (
+            p_user_id,
+            p_branch_id,
+            p_role,
+            p_salary,
+            p_joined_date
+        );
+
+        SET p_employee_id = LAST_INSERT_ID();
+
+        COMMIT;
+
+        SET p_success = TRUE;
+        SET p_message = 'Employee registered successfully.';
+
+    END IF;
+
+END$$
+
+DELIMITER ;
+
+--...............................................................................................................................
+--Procedure : Register Doctor
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS RegisterDoctor$$
+
+CREATE PROCEDURE RegisterDoctor(
+    IN p_address_line_1 VARCHAR(150),
+    IN p_address_line_2 VARCHAR(150),
+    IN p_city VARCHAR(50),
+    IN p_province VARCHAR(50),
+    IN p_postal_code VARCHAR(10),
+
+    IN p_full_name VARCHAR(100),
+    IN p_NIC VARCHAR(20),
+    IN p_gender VARCHAR(10),
+    IN p_DOB DATE,
+    IN p_email VARCHAR(150),
+    IN p_contact_no VARCHAR(15),
+    IN p_password_hash VARCHAR(255),
+
+    IN p_branch_id INT,
+    IN p_salary DECIMAL(10,2),
+    IN p_joined_date DATE,
+
+    IN p_room_no VARCHAR(10),
+    IN p_medical_licence_number VARCHAR(50),
+
+    OUT p_doctor_id INT,
+    OUT p_employee_id INT,
+    OUT p_user_id INT,
+    OUT p_success BOOLEAN,
+    OUT p_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_address_id INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_doctor_id = NULL;
+        SET p_employee_id = NULL;
+        SET p_user_id = NULL;
+        SET p_success = FALSE;
+        SET p_message = 'Doctor registration failed due to a database error.';
+    END;
+
+    SET p_doctor_id = NULL;
+    SET p_employee_id = NULL;
+    SET p_user_id = NULL;
+    SET p_success = FALSE;
+    SET p_message = NULL;
+
+    IF NOT IsValidEmail(p_email) THEN
+        SET p_message = 'Invalid email address.';
+
+    ELSEIF p_full_name IS NULL OR TRIM(p_full_name) = '' THEN
+        SET p_message = 'Full name is required.';
+
+    ELSEIF p_password_hash IS NULL OR TRIM(p_password_hash) = '' THEN
+        SET p_message = 'Password is required.';
+
+    ELSEIF p_medical_licence_number IS NULL
+           OR TRIM(p_medical_licence_number) = '' THEN
+        SET p_message = 'Medical licence number is required.';
+
+    ELSEIF EXISTS (
+        SELECT 1
+        FROM User
+        WHERE email = p_email
+    ) THEN
+        SET p_message = 'A user with this email already exists.';
+
+    ELSEIF p_NIC IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM User
+        WHERE NIC = p_NIC
+    ) THEN
+        SET p_message = 'A user with this NIC already exists.';
+
+    ELSEIF EXISTS (
+        SELECT 1
+        FROM Doctor
+        WHERE medical_licence_number = p_medical_licence_number
+    ) THEN
+        SET p_message = 'A doctor with this medical licence already exists.';
+
+    ELSEIF NOT EXISTS (
+        SELECT 1
+        FROM Branch
+        WHERE branch_id = p_branch_id
+    ) THEN
+        SET p_message = 'Branch does not exist.';
+
+    ELSE
+
+        START TRANSACTION;
+
+        -- Create address 
+        INSERT INTO Address (
+            address_line_1,
+            address_line_2,
+            city,
+            province,
+            postal_code
+        )
+        VALUES (
+            p_address_line_1,
+            p_address_line_2,
+            p_city,
+            p_province,
+            p_postal_code
+        );
+
+        SET v_address_id = LAST_INSERT_ID();
+
+        -- Create user 
+        INSERT INTO User (
+            address_id,
+            full_name,
+            NIC,
+            gender,
+            DOB,
+            email,
+            contact_no,
+            Password_hash
+        )
+        VALUES (
+            v_address_id,
+            p_full_name,
+            p_NIC,
+            p_gender,
+            p_DOB,
+            p_email,
+            p_contact_no,
+            p_password_hash
+        );
+
+        SET p_user_id = LAST_INSERT_ID();
+
+        -- Create employee
+        INSERT INTO Employee (
+            user_id,
+            branch_id,
+            role,
+            salary,
+            joined_date
+        )
+        VALUES (
+            p_user_id,
+            p_branch_id,
+            'Doctor',
+            p_salary,
+            p_joined_date
+        );
+
+        SET p_employee_id = LAST_INSERT_ID();
+
+        -- Create doctor 
+        INSERT INTO Doctor (
+            employee_id,
+            room_no,
+            medical_licence_number
+        )
+        VALUES (
+            p_employee_id,
+            p_room_no,
+            p_medical_licence_number
+        );
+
+        SET p_doctor_id = LAST_INSERT_ID();
+
+        COMMIT;
+
+        SET p_success = TRUE;
+        SET p_message = 'Doctor registered successfully.';
+
+    END IF;
+
+END$$
+
+DELIMITER ;
+
+--...............................................................................................................................
+--Procedure : Register Patient
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS RegisterPatient$$
+
+CREATE PROCEDURE RegisterPatient(
+    IN p_address_line_1 VARCHAR(150),
+    IN p_address_line_2 VARCHAR(150),
+    IN p_city VARCHAR(50),
+    IN p_province VARCHAR(50),
+    IN p_postal_code VARCHAR(10),
+
+    IN p_registered_branch_id INT,
+    IN p_contact_no VARCHAR(20),
+    IN p_emergency_contact_no VARCHAR(20),
+    IN p_blood_group VARCHAR(5),
+    IN p_full_name VARCHAR(100),
+    IN p_allergies TEXT,
+    IN p_chronic_conditions TEXT,
+    IN p_NIC VARCHAR(20),
+    IN p_gender VARCHAR(20),
+    IN p_DOB DATE,
+    IN p_email VARCHAR(254),
+
+    OUT p_patient_id INT,
+    OUT p_success BOOLEAN,
+    OUT p_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_address_id INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_patient_id = NULL;
+        SET p_success = FALSE;
+        SET p_message = 'Patient registration failed due to a database error.';
+    END;
+
+    SET p_patient_id = NULL;
+    SET p_success = FALSE;
+    SET p_message = NULL;
+
+    -- Validate email 
+    IF NOT IsValidEmail(p_email) THEN
+        SET p_message = 'Invalid email address.';
+    ELSEIF p_DOB IS NULL THEN
+        SET p_message = 'Date of birth is required.';
+    ELSEIF p_full_name IS NULL OR TRIM(p_full_name) = '' THEN
+        SET p_message = 'Full name is required.';
+    ELSE
+        -- Check duplicate NIC 
+        IF p_NIC IS NOT NULL AND EXISTS (
+            SELECT 1
+            FROM Patient
+            WHERE NIC = p_NIC
+        ) THEN
+            SET p_message = 'A patient with this NIC already exists.';
+        ELSEIF EXISTS (
+            SELECT 1
+            FROM Patient
+            WHERE email = p_email
+        ) THEN
+            SET p_message = 'A patient with this email already exists.';
+        ELSEIF NOT EXISTS (
+            SELECT 1
+            FROM Branch
+            WHERE branch_id = p_registered_branch_id
+        ) THEN
+            SET p_message = 'Registered branch does not exist.';
+        ELSE
+
+            START TRANSACTION;
+
+            -- Create address 
+            INSERT INTO Address (
+                address_line_1,
+                address_line_2,
+                city,
+                province,
+                postal_code
+            )
+            VALUES (
+                p_address_line_1,
+                p_address_line_2,
+                p_city,
+                p_province,
+                p_postal_code
+            );
+
+            SET v_address_id = LAST_INSERT_ID();
+
+            -- Create patient 
+            INSERT INTO Patient (
+                address_id,
+                registered_branch_id,
+                contact_no,
+                emergency_contact_no,
+                blood_group,
+                full_name,
+                allergies,
+                chronic_conditions,
+                NIC,
+                gender,
+                DOB,
+                email
+            )
+            VALUES (
+                v_address_id,
+                p_registered_branch_id,
+                p_contact_no,
+                p_emergency_contact_no,
+                p_blood_group,
+                p_full_name,
+                p_allergies,
+                p_chronic_conditions,
+                p_NIC,
+                p_gender,
+                p_DOB,
+                p_email
+            );
+
+            SET p_patient_id = LAST_INSERT_ID();
+
+            COMMIT;
+
+            SET p_success = TRUE;
+            SET p_message = 'Patient registered successfully.';
+
+        END IF;
+    END IF;
+
+END$$
+
+DELIMITER ;
+
+--...............................................................................................................................
+--Procedure : Authenticate User
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS AuthenticateUser$$
+
+CREATE PROCEDURE AuthenticateUser(
+    IN p_email VARCHAR(150),
+    IN p_password_hash VARCHAR(255),
+
+    OUT p_user_id INT,
+    OUT p_full_name VARCHAR(100),
+    OUT p_success BOOLEAN,
+    OUT p_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_stored_password_hash VARCHAR(255);
+
+    SET p_user_id = NULL;
+    SET p_full_name = NULL;
+    SET p_success = FALSE;
+    SET p_message = NULL;
+
+    SELECT
+        user_id,
+        full_name,
+        Password_hash
+    INTO
+        p_user_id,
+        p_full_name,
+        v_stored_password_hash
+    FROM User
+    WHERE email = p_email
+    LIMIT 1;
+
+    IF p_user_id IS NULL THEN
+
+        SET p_success = FALSE;
+        SET p_message = 'Invalid email or password.';
+
+    ELSEIF v_stored_password_hash <> p_password_hash THEN
+
+        SET p_user_id = NULL;
+        SET p_full_name = NULL;
+        SET p_success = FALSE;
+        SET p_message = 'Invalid email or password.';
+
+    ELSE
+
+        SET p_success = TRUE;
+        SET p_message = 'Authentication successful.';
+
+    END IF;
+
+END$$
+
+DELIMITER ;
