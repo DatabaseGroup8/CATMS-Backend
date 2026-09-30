@@ -34,7 +34,7 @@ def add_patient_condition(request):
                     is_chronic, current_status
                 ])
                 
-                # Step 5: Fetch the generated OUT parameters back into Python
+                # Step 5: Fetch the generated OUT parameters back into Python tuple
                 cursor.execute("SELECT @p_patient_condition_id, @p_error_message, @p_success;")
                 result = cursor.fetchone()
                 
@@ -88,6 +88,7 @@ def get_patient_history(request, patient_id):
                 """, [patient_id])
                 
                 # Step 4: Fetch ALL matching rows
+                # python list of tuples
                 rows = cursor.fetchall()
 
             # Step 5: Format the raw tuple data into a list of dictionaries
