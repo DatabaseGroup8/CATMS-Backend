@@ -63,6 +63,60 @@ def add_patient_condition(request):
 
 
 @csrf_exempt
+def get_patient_history(request, patient_id):
+    # Step 1: Enforce GET method since we are only reading data
+    if request.method == 'GET':
+        try:
+            # Step 2: Open a secure database cursor
+            with connection.cursor() as cursor:
+                
+                # Step 3: Execute the raw SQL JOIN query
+                # We join Appointment -> Time_Slot (for the date) -> Consultation -> Medical Record
+                cursor.execute("""
+                    SELECT 
+                        a.appointment_id,
+                        ts.start_time,
+                        mr.chief_complaint,
+                        mr.symptoms,
+                        mr.diagnoses
+                    FROM Appointment a
+                    JOIN Time_Slot ts ON a.time_slot_id = ts.time_slot_id
+                    JOIN Consultation_record cr ON a.appointment_id = cr.appointment_id
+                    JOIN Medical_record mr ON cr.medical_record_id = mr.medical_record_id
+                    WHERE a.patient_id = %s
+                    ORDER BY ts.start_time DESC;
+                """, [patient_id])
+                
+                # Step 4: Fetch ALL matching rows
+                rows = cursor.fetchall()
+
+            # Step 5: Format the raw tuple data into a list of dictionaries
+            history_data = []
+            for row in rows:
+                history_data.append({
+                    'appointment_id': row[0],
+                    # Convert datetime object to string so it can be serialized to JSON safely
+                    'date': row[1].strftime('%Y-%m-%d %H:%M') if row[1] else None,
+                    'chief_complaint': row[2],
+                    'symptoms': row[3],
+                    'diagnoses': row[4]
+                })
+
+            # Step 6: Return the formatted JSON response
+            return JsonResponse({
+                'status': 'success', 
+                'patient_id': patient_id,
+                'record_count': len(history_data),
+                'data': history_data
+            }, status=200)
+
+        except Exception as e:
+            return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
+            
+    return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
+
+
+@csrf_exempt
 def add_treatment(request):
     if request.method != "POST":
         return JsonResponse(
