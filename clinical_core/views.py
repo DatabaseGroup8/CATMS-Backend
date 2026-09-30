@@ -63,7 +63,6 @@ def add_patient_condition(request):
 
 
 @csrf_exempt
-
 def add_treatment(request):
     if request.method != "POST":
         return JsonResponse(
