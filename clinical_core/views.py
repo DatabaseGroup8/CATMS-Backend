@@ -60,3 +60,84 @@ def add_patient_condition(request):
             
     # Fallback for incorrect HTTP methods (like GET)
     return JsonResponse({'status': 'error', 'message': 'Only POST method is allowed'}, status=405)
+
+
+@csrf_exempt
+
+def add_treatment(request):
+    if request.method != "POST":
+        return JsonResponse(
+            {"error": "Only POST method is allowed."},
+            status = 405
+        )
+
+    try:
+        data = json.loads(request.body)
+
+        medical_record_id = data.get("medical_record_id")
+        treatment_service_code = data.get("treatment_service_code")
+
+        if medical_record_id is None or treatment_service_code is None:
+            return JsonResponse(
+                {
+                    "error": "medical_record_id and treatment_service_code are required."
+                },
+                status = 400
+            )
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CALL AddTreatment(%s, %s, @p_treatment_id, @p_error_message, @p_success)
+                """,
+                [
+                    medical_record_id,
+                    treatment_service_code
+                ]
+            )
+
+            cursor.execute(
+                """
+                SELECT
+                    @p_treatment_id,
+                    @p_error_message,
+                    @p_success
+                """
+            )
+
+            result = cursor.fetchone()
+
+        treatment_id, error_message, success = result
+
+        if success:
+            return JsonResponse(
+                {
+                    "success" : True,
+                    "treatment_id" : treatment_id,
+                    "message" : "Treatment added successfully."
+                },
+                status = 201
+            )
+
+        return JsonResponse(
+            {
+                "success": False,
+                "error": error_message 
+            },
+            status = 400
+        )
+
+    except json.JSONDecodeError:
+        return JsonResponse(
+            {"error": "Invalid JSON request body."},
+            status = 400
+        )
+
+    except Exception as e:
+        return JsonResponse(
+            {
+                "success": False,
+                "error": str(e)
+            },
+            status = 500
+        )
