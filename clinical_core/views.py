@@ -1,8 +1,13 @@
 from django.shortcuts import render
 import json
+import logging
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+from django.db import DatabaseError
+from django.views.decorators.http import require_POST
+
+logger = logging.getLogger(__name__)
 
 @csrf_exempt
 def add_patient_condition(request):
@@ -294,5 +299,68 @@ def get_consultation_summary(request):
         'status':'error',
         'message':'Only GET method is allowed'
     }, status = 405)
-                
-                
+
+@require_POST
+def create_consultation(request):
+    """Accept JSON consultation details, treatments and prescriptions.
+
+    Requires CreateConsultationWithDetails to be installed in MySQL.
+    Each treatment contains treatment_service_code; each prescription contains
+    medication_id, dosage, frequency, duration_days and optional instructions.
+    """
+    try:
+        data = json.loads(request.body)
+        if not isinstance(data, dict):
+            raise ValueError("The request body must be a JSON object.")
+        appointment_id = data.get("appointment_id")
+        if type(appointment_id) is not int or appointment_id <= 0:
+            raise ValueError("appointment_id must be a positive integer.")
+        for field in ("chief_complaint", "symptoms", "diagnosis"):
+            if not isinstance(data.get(field), str) or not data[field].strip():
+                raise ValueError(f"{field} must be a non-empty string.")
+        if len(data["chief_complaint"]) > 255:
+            raise ValueError("chief_complaint must not exceed 255 characters.")
+        treatments = data.get("treatments", [])
+        prescriptions = data.get("prescriptions", [])
+        for items, id_field in ((treatments, "treatment_service_code"),
+                                (prescriptions, "medication_id")):
+            if not isinstance(items, list):
+                raise ValueError("treatments and prescriptions must be arrays.")
+            for item in items:
+                if (not isinstance(item, dict) or type(item.get(id_field)) is not int
+                        or item[id_field] <= 0):
+                    raise ValueError(f"Each item needs a positive integer {id_field}.")
+        for item in prescriptions:
+            for field in ("dosage", "frequency"):
+                if (not isinstance(item.get(field), str)
+                        or not item[field].strip() or len(item[field]) > 50):
+                    raise ValueError(f"{field} must contain 1 to 50 characters.")
+            if type(item.get("duration_days")) is not int or item["duration_days"] <= 0:
+                raise ValueError("duration_days must be a positive integer.")
+            if (not isinstance(item.get("instructions", ""), str)
+                    or len(item.get("instructions", "")) > 255):
+                raise ValueError("instructions must be a string of at most 255 characters.")
+            item.setdefault("instructions", "")
+    except (ValueError, UnicodeDecodeError) as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET @consultation_id = NULL, @consultation_message = NULL, @consultation_success = 0")
+            cursor.execute(
+                "CALL CreateConsultationWithDetails(%s, %s, %s, %s, %s, %s, "
+                "@consultation_id, @consultation_message, @consultation_success)",
+                [appointment_id, data["chief_complaint"], data["symptoms"],
+                 data["diagnosis"], json.dumps(treatments), json.dumps(prescriptions)],
+            )
+            while cursor.nextset():
+                pass
+            cursor.execute("SELECT @consultation_id, @consultation_message, @consultation_success")
+            consultation_id, message, success = cursor.fetchone()
+    except DatabaseError:
+        logger.exception("Failed to create consultation")
+        return JsonResponse({"success": False, "error": "Unable to create consultation."}, status=500)
+    if not success:
+        logger.warning("CreateConsultationWithDetails failed: %s", message)
+        return JsonResponse({"success": False, "error": "Consultation could not be created. Check the appointment and consultation details."}, status=400)
+    return JsonResponse({"success": True, "consultation_id": consultation_id}, status=201)               

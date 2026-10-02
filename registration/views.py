@@ -2,6 +2,14 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+import json
+import logging
+from datetime import date, time
+from django.db import DatabaseError
+from django.utils import timezone
+from django.views.decorators.http import require_POST
+
+logger = logging.getLogger(__name__)
 
 @csrf_exempt
 def search_patients(request):
@@ -151,3 +159,91 @@ def get_patient_appointments(request):
         'status':'error',
         'message':'Only GET method is allowed'
     }, status = 405)
+
+@require_POST
+def create_time_slot(request):
+    """POST JSON: doctor_id, branch_id, available_date, start_time, end_time.
+
+    Dates use YYYY-MM-DD and times use HH:MM[:SS]. Requires the MySQL
+    CreateTimeSlot procedure; it must enforce schedule overlap constraints.
+    """
+    try:
+        data = json.loads(request.body)
+        if not isinstance(data, dict):
+            raise ValueError("The request body must be a JSON object.")
+        for field in ("doctor_id", "branch_id"):
+            if type(data.get(field)) is not int or data[field] <= 0:
+                raise ValueError(f"{field} must be a positive integer.")
+        for field in ("available_date", "start_time", "end_time"):
+            if not isinstance(data.get(field), str):
+                raise ValueError(f"{field} is required and must be a string.")
+
+        available_date = date.fromisoformat(data["available_date"])
+        start_time = time.fromisoformat(data["start_time"])
+        end_time = time.fromisoformat(data["end_time"])
+        if start_time.tzinfo is not None or end_time.tzinfo is not None:
+            raise ValueError("Times must be local times without a UTC offset.")
+        if end_time <= start_time:
+            raise ValueError("end_time must be after start_time.")
+        if available_date < timezone.localdate():
+            raise ValueError("available_date must not be in the past.")
+    except (ValueError, UnicodeDecodeError) as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET @slot_id = NULL, @slot_message = NULL, @slot_success = 0")
+            cursor.execute(
+                "CALL CreateTimeSlot(%s, %s, %s, %s, %s, @slot_id, @slot_message, @slot_success)",
+                [data["doctor_id"], data["branch_id"], available_date, start_time, end_time],
+            )
+            while cursor.nextset():
+                pass
+            cursor.execute("SELECT @slot_id, @slot_message, @slot_success")
+            slot_id, message, success = cursor.fetchone()
+    except DatabaseError:
+        logger.exception("Failed to create time slot")
+        return JsonResponse({"success": False, "error": "Unable to create time slot."}, status=500)
+    if not success:
+        logger.warning("CreateTimeSlot failed: %s", message)
+        return JsonResponse({"success": False, "error": "Time slot could not be created. Check the doctor, branch and schedule."}, status=400)
+    return JsonResponse({"success": True, "time_slot_id": slot_id}, status=201)
+
+
+@require_POST
+def book_appointment(request):
+    """POST JSON: patient_id, time_slot_id and optional notes.
+
+    Requires BookAppointment in MySQL, which locks the slot during booking.
+    """
+    try:
+        data = json.loads(request.body)
+        if not isinstance(data, dict):
+            raise ValueError("The request body must be a JSON object.")
+        for field in ("patient_id", "time_slot_id"):
+            if type(data.get(field)) is not int or data[field] <= 0:
+                raise ValueError(f"{field} must be a positive integer.")
+        notes = data.get("notes", "")
+        if not isinstance(notes, str):
+            raise ValueError("notes must be a string.")
+    except (ValueError, UnicodeDecodeError) as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET @appointment_id = NULL, @booking_message = NULL, @booking_success = 0")
+            cursor.execute(
+                "CALL BookAppointment(%s, %s, %s, @appointment_id, @booking_message, @booking_success)",
+                [data["patient_id"], data["time_slot_id"], notes],
+            )
+            while cursor.nextset():
+                pass
+            cursor.execute("SELECT @appointment_id, @booking_message, @booking_success")
+            appointment_id, message, success = cursor.fetchone()
+    except DatabaseError:
+        logger.exception("Failed to book appointment")
+        return JsonResponse({"success": False, "error": "Unable to book appointment."}, status=500)
+    if not success:
+        logger.warning("BookAppointment failed: %s", message)
+        return JsonResponse({"success": False, "error": "Appointment could not be booked. Check the patient and slot availability."}, status=400)
+    return JsonResponse({"success": True, "appointment_id": appointment_id}, status=201)

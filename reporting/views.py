@@ -2,6 +2,13 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+import logging
+from datetime import date
+
+from django.db import DatabaseError
+from django.views.decorators.http import require_GET
+
+logger = logging.getLogger(__name__)
 
 @csrf_exempt
 def get_doctor_performance_report(request):
@@ -114,3 +121,53 @@ def get_common_conditons_report(request):
         'message':'Only GET method is allowed'
     }, status = 405)
 
+
+@require_GET
+def get_medication_usage_report(request):
+    """Count prescriptions and distinct patients per medication.
+
+    Optional inclusive start_date/end_date filters use the appointment date.
+    Only completed consultations count. Usage means prescription records,
+    since the schema does not store dispensed quantities.
+    """
+    try:
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+        start_date = date.fromisoformat(start_date) if start_date is not None else None
+        end_date = date.fromisoformat(end_date) if end_date is not None else None
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("start_date must not be after end_date.")
+    except ValueError:
+        return JsonResponse({"success": False, "error": "Use valid YYYY-MM-DD dates with start_date <= end_date."}, status=400)
+
+    conditions = ["a.status = %s"]
+    params = ["Completed"]
+    if start_date is not None:
+        conditions.append("ts.available_date >= %s")
+        params.append(start_date)
+    if end_date is not None:
+        conditions.append("ts.available_date <= %s")
+        params.append(end_date)
+    sql = """
+        SELECT m.medication_id, m.generic_name, m.form, m.manufacturer,
+               COUNT(DISTINCT p.prescription_id) AS prescription_count,
+               COUNT(DISTINCT a.patient_id) AS patient_count
+        FROM Medication m
+        JOIN Prescription p ON p.medication_id = m.medication_id
+        JOIN consultation_record cr ON cr.medical_record_id = p.medical_record_id
+        JOIN Appointment a ON a.appointment_id = cr.appointment_id
+        JOIN Time_Slot ts ON ts.time_slot_id = a.time_slot_id
+        WHERE """ + " AND ".join(conditions) + """
+        GROUP BY m.medication_id, m.generic_name, m.form, m.manufacturer
+        ORDER BY prescription_count DESC, m.medication_id
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            columns = [column[0] for column in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    except DatabaseError:
+        logger.exception("Failed to retrieve medication usage report")
+        return JsonResponse({"success": False, "error": "Unable to retrieve medication usage report."}, status=500)
+    return JsonResponse({"success": True, "start_date": start_date,
+                         "end_date": end_date, "results": results})
