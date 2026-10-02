@@ -68,6 +68,7 @@ BEGIN
 END //
 
 DELIMITER ;
+
 --Function 4: Check Doctor Availability
 DELIMITER $$
 DROP FUNCTION IF EXISTS IsDoctorAvailable$$

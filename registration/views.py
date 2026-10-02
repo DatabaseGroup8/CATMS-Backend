@@ -31,6 +31,7 @@ def search_patients(request):
                         first_name, 
                         last_name, 
                         date_of_birth, 
+                        CalculateAge(date_of_birth) AS age,
                         contact_number
                     FROM Patient
                     WHERE first_name LIKE %s 
@@ -52,6 +53,7 @@ def search_patients(request):
                     'last_name': row[2],
                     # Convert date object to a standard string format
                     'date_of_birth': row[3].strftime('%Y-%m-%d') if row[3] else None,
+                    'age': row[4],
                     'contact_number': row[4]
                 })
 
