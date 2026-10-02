@@ -60,7 +60,7 @@ def search_patients(request):
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
 
-def get_patient_condition(request):
+def get_patient_appointments(request):
     # Check that the request uses the GET Method
     if request == 'GET':
         try:
