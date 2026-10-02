@@ -59,3 +59,58 @@ def get_doctor_performance_report(request):
             return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
+
+
+def get_common_conditons_report(request):
+    # Check that the request uses the GET Method
+    if request == 'GET':
+        try:
+            # Open a database cursor to execute raw SQL
+            with connection.cursor() as cursor:
+
+                # Find the no of times each medical condition has been recorded
+                cursor.execute("""
+                    SELECT
+                        c.condition_id,
+                        c.condition_name,
+                        COUNT(pc.patient_condition_id) AS occurence_count
+                    FROM Patient_condtion pc
+                    JOIN Conditions c
+                        ON pc.condition_id = c.condition_id
+                    GROUP BY
+                        c.condition_id,
+                        c.condition_name
+                    ORDER BY
+                        occurence_count DESC,
+                """)
+
+                # Retrieve all condition records
+                rows = cursor.fetchall()
+
+                # Get the column names returned by the query
+                columns = [column[0] for column in cursor.description]
+
+                # Convert each database row into a dictionary
+                report = [
+                    dict(zip(columns, row))
+                    for row in rows
+                ]
+
+            # Return the common condtion report as JSON
+            return JsonResponse({
+                'status':'success',
+                'report': report
+            }, status = 200)
+
+        except Exception as e:
+            return JsonResponse({
+                'status':'critical_error',
+                'message':str(e)
+            }, status = 500)
+
+    # Reject requests that are not GET
+    return JsonResponse({
+        'status':'error',
+        'message':'Only GET method is allowed'
+    }, status = 405)
+
