@@ -58,3 +58,96 @@ def search_patients(request):
             return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
+
+
+def get_patient_condition(request):
+    # Check that the request uses the GET Method
+    if request == 'GET':
+        try:
+            # Get the patient ID and optional appointment status from the query parameters
+            patient_id = request.GET.get('patient_id')
+            status = request.GET.get('status')
+
+            # Patient ID is required
+            if not patient_id:
+                return JsonResponse({
+                    'status':'error',
+                    'message':'patient_id is required'
+                }, status = 400)
+
+            # Open a database cursor to execute raw SQL
+            with connection.cursor() as cursor:
+
+                # Retrieve the patient's appointments
+                # A status filter is applied only when a status is provided
+                cursor.execute("""
+                    SELECT
+                        a.appointment_id,
+                        a.patient_id,
+                        a.time_slot_id,
+                        a.type,
+                        a.status,
+                        a.notes,
+                        a.updated_at,
+                        a.created_at,
+                        ts.doctor_id,
+                        ts.branch_id,
+                        ts.available_date,
+                        ts.start_time,
+                        ts.end_time
+                    FROM Appointment a
+                    JOIN Time_Slot ts
+                        ON a.time_slot_id = ts.time_slot_id
+                    WHERE a.patient_id = %s
+                    AND (%s IS NULL OR a.status = %s)
+                    ORDER BY ts.available_date DESC, ts.start_time DESC;\
+                """,[
+                    patient_id,
+                    status,
+                    status
+                ])
+
+                # Retrieve all matching appointment records
+                rows = cursor.fetchall()
+
+                # Get the column names returned by the query
+                columns = [column[0] for column in cursor.description]
+
+                # Convert each database row into a dictionary
+                appointments = [
+                    dict(zip(columns, row))
+                    for row in rows
+                ]
+
+                # Use the required SQL function to calculate the total no of appointments for the patient
+                cursor.execute("""
+                    SELECT CountPatientAppointments(%s, %s);
+                """, [
+                    patient_id,
+                    status
+                ])
+
+                # Get the total appointment count
+                total_appointments = cursor.fetchone()[0]
+
+            # Return the appointments and total count as JSON
+            return JsonResponse({
+                'status':'success',
+                'patient_id':int(patient_id),
+                'total_appointments':total_appointments,
+                'appointments': appointments
+            }, status = 200)
+
+        # Handle the unexpected database or server errors
+        except Exception as e:
+            return JsonResponse({
+                'status':'critical_error',
+                'message':str(e)
+            }, status = 500)
+
+
+    # Reject requests that are not GET
+    return JsonResponse({
+        'status':'error',
+        'message':'Only GET method is allowed'
+    }, status = 405)
