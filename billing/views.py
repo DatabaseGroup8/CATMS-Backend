@@ -61,16 +61,23 @@ def outstanding_balance(request, invoice_id=None):
     Requires CalculateOutstandingBalance in MySQL. Money is returned as a
     decimal string to preserve precision.
     """
+    #Prefer the URL argument, falling back to the invoice_id query parameter.
     raw_id = invoice_id if invoice_id is not None else request.GET.get("invoice_id")
+
+    # Validate before conversion, including a length limit for oversized inputs.
     if (isinstance(raw_id, bool) or not isinstance(raw_id, (str, int))
             or not str(raw_id).isascii() or not str(raw_id).isdigit()
             or len(str(raw_id)) > 10):
         return JsonResponse({"success": False, "error": "invoice_id must be a positive integer."}, status=400)
     invoice_id = int(raw_id)
+
+    # Invoice IDs use a signed MySQL INT column.
     if not 0 < invoice_id <= 2147483647:
         return JsonResponse({"success": False, "error": "invoice_id is outside the valid range."}, status=400)
     try:
         with connection.cursor() as cursor:
+            # Select from Invoice so a missing invoice produces no row.
+            # The SQL function deducts insurance and completed payments.
             cursor.execute(
                 "SELECT Invoice_id, CalculateOutstandingBalance(Invoice_id) "
                 "FROM Invoice WHERE Invoice_id = %s", [invoice_id],
@@ -79,6 +86,8 @@ def outstanding_balance(request, invoice_id=None):
     except DatabaseError:
         logger.exception("Failed to retrieve outstanding balance")
         return JsonResponse({"success": False, "error": "Unable to retrieve outstanding balance."}, status=500)
+    # Distinguish an unknown invoice from an existing invoice with zero balance.
     if row is None:
         return JsonResponse({"success": False, "error": "Invoice not found."}, status=404)
+    # JsonResponse encodes Decimal as a string, preserving monetary precision.
     return JsonResponse({"success": True, "invoice_id": row[0], "outstanding_balance": row[1]})
