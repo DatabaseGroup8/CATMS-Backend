@@ -1,5 +1,4 @@
-CREATE DATABASE IF NOT EXISTS catms_db;
-USE catms_db;
+USE defaultdb;
 
 -- 1. Address Table
 CREATE TABLE Address (
@@ -12,7 +11,7 @@ CREATE TABLE Address (
 );
 
 -- 2. User Table
-CREATE TABLE User (
+CREATE TABLE `User` (
     user_id INT PRIMARY KEY AUTO_INCREMENT,
     address_id INT,
     full_name VARCHAR(100),
