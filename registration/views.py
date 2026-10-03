@@ -169,6 +169,7 @@ def create_time_slot(request):
     Dates use YYYY-MM-DD and times use HH:MM[:SS]. Requires the MySQL
     CreateTimeSlot procedure; it must enforce schedule overlap constraints.
     """
+    # Reject malformed JSON and invalid fields before calling the database.
     try:
         data = json.loads(request.body)
         if not isinstance(data, dict):
@@ -179,10 +180,12 @@ def create_time_slot(request):
         for field in ("available_date", "start_time", "end_time"):
             if not isinstance(data.get(field), str):
                 raise ValueError(f"{field} is required and must be a string.")
-
+            
+        # Parse dates and times so comparisons use actual date/time values.
         available_date = date.fromisoformat(data["available_date"])
         start_time = time.fromisoformat(data["start_time"])
         end_time = time.fromisoformat(data["end_time"])
+        # MySQL TIME fields here represent local times without UTC offsets.
         if start_time.tzinfo is not None or end_time.tzinfo is not None:
             raise ValueError("Times must be local times without a UTC offset.")
         if end_time <= start_time:
@@ -194,21 +197,27 @@ def create_time_slot(request):
 
     try:
         with connection.cursor() as cursor:
+            # Reset connection-scoped variables that receive the procedure outputs.
             cursor.execute("SET @slot_id = NULL, @slot_message = NULL, @slot_success = 0")
+            # Bind request values as parameters; the procedure manages its transaction.
             cursor.execute(
                 "CALL CreateTimeSlot(%s, %s, %s, %s, %s, @slot_id, @slot_message, @slot_success)",
                 [data["doctor_id"], data["branch_id"], available_date, start_time, end_time],
             )
+            # Consume CALL result sets before selecting its OUT parameters.
             while cursor.nextset():
                 pass
             cursor.execute("SELECT @slot_id, @slot_message, @slot_success")
             slot_id, message, success = cursor.fetchone()
+    # Keep database diagnostics in server logs and return a generic error.
     except DatabaseError:
         logger.exception("Failed to create time slot")
         return JsonResponse({"success": False, "error": "Unable to create time slot."}, status=500)
+    # Handle failures returned by the procedure, even when CALL itself succeeds.
     if not success:
         logger.warning("CreateTimeSlot failed: %s", message)
         return JsonResponse({"success": False, "error": "Time slot could not be created. Check the doctor, branch and schedule."}, status=400)
+    # Return the new record ID with HTTP 201 (Created).
     return JsonResponse({"success": True, "time_slot_id": slot_id}, status=201)
 
 
@@ -218,6 +227,7 @@ def book_appointment(request):
 
     Requires BookAppointment in MySQL, which locks the slot during booking.
     """
+    # Reject malformed JSON and invalid fields before calling the database.
     try:
         data = json.loads(request.body)
         if not isinstance(data, dict):
@@ -233,19 +243,25 @@ def book_appointment(request):
 
     try:
         with connection.cursor() as cursor:
+            # Reset connection-scoped variables that receive the procedure outputs.
             cursor.execute("SET @appointment_id = NULL, @booking_message = NULL, @booking_success = 0")
+            # Bind request values as parameters; the procedure manages its transaction.
             cursor.execute(
                 "CALL BookAppointment(%s, %s, %s, @appointment_id, @booking_message, @booking_success)",
                 [data["patient_id"], data["time_slot_id"], notes],
             )
+            # Consume CALL result sets before selecting its OUT parameters.
             while cursor.nextset():
                 pass
             cursor.execute("SELECT @appointment_id, @booking_message, @booking_success")
             appointment_id, message, success = cursor.fetchone()
+    # Keep database diagnostics in server logs and return a generic error.
     except DatabaseError:
         logger.exception("Failed to book appointment")
         return JsonResponse({"success": False, "error": "Unable to book appointment."}, status=500)
+    # Handle failures returned by the procedure, even when CALL itself succeeds.
     if not success:
         logger.warning("BookAppointment failed: %s", message)
         return JsonResponse({"success": False, "error": "Appointment could not be booked. Check the patient and slot availability."}, status=400)
+    # Return the new record ID with HTTP 201 (Created).
     return JsonResponse({"success": True, "appointment_id": appointment_id}, status=201)

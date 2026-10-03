@@ -308,6 +308,7 @@ def create_consultation(request):
     Each treatment contains treatment_service_code; each prescription contains
     medication_id, dosage, frequency, duration_days and optional instructions.
     """
+    # Validate the JSON body before sending any data to MySQL.
     try:
         data = json.loads(request.body)
         if not isinstance(data, dict):
@@ -320,6 +321,8 @@ def create_consultation(request):
                 raise ValueError(f"{field} must be a non-empty string.")
         if len(data["chief_complaint"]) > 255:
             raise ValueError("chief_complaint must not exceed 255 characters.")
+        
+        # Optional arrays are passed to the procedure as JSON strings.
         treatments = data.get("treatments", [])
         prescriptions = data.get("prescriptions", [])
         for items, id_field in ((treatments, "treatment_service_code"),
@@ -330,6 +333,8 @@ def create_consultation(request):
                 if (not isinstance(item, dict) or type(item.get(id_field)) is not int
                         or item[id_field] <= 0):
                     raise ValueError(f"Each item needs a positive integer {id_field}.")
+
+        # Match prescription fields to the database and procedure limits.
         for item in prescriptions:
             for field in ("dosage", "frequency"):
                 if (not isinstance(item.get(field), str)
@@ -346,21 +351,27 @@ def create_consultation(request):
 
     try:
         with connection.cursor() as cursor:
+            # Reset connection-scoped variables used for the procedure OUT parameters.
             cursor.execute("SET @consultation_id = NULL, @consultation_message = NULL, @consultation_success = 0")
+            # Bind values separately from SQL; the procedure manages its transaction.
             cursor.execute(
                 "CALL CreateConsultationWithDetails(%s, %s, %s, %s, %s, %s, "
                 "@consultation_id, @consultation_message, @consultation_success)",
                 [appointment_id, data["chief_complaint"], data["symptoms"],
                  data["diagnosis"], json.dumps(treatments), json.dumps(prescriptions)],
             )
+            # Drain CALL result sets before reading the OUT parameter values.
             while cursor.nextset():
                 pass
             cursor.execute("SELECT @consultation_id, @consultation_message, @consultation_success")
             consultation_id, message, success = cursor.fetchone()
+    # Log database details on the server without exposing them in the response.
     except DatabaseError:
         logger.exception("Failed to create consultation")
         return JsonResponse({"success": False, "error": "Unable to create consultation."}, status=500)
+    # A procedure may report failure without raising a Python database exception.
     if not success:
         logger.warning("CreateConsultationWithDetails failed: %s", message)
         return JsonResponse({"success": False, "error": "Consultation could not be created. Check the appointment and consultation details."}, status=400)
+    # HTTP 201 indicates that the consultation was created.
     return JsonResponse({"success": True, "consultation_id": consultation_id}, status=201)               

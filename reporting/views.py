@@ -130,6 +130,7 @@ def get_medication_usage_report(request):
     Only completed consultations count. Usage means prescription records,
     since the schema does not store dispensed quantities.
     """
+    # Either date boundary may be omitted for an open-ended reporting period.
     try:
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
@@ -140,6 +141,7 @@ def get_medication_usage_report(request):
     except ValueError:
         return JsonResponse({"success": False, "error": "Use valid YYYY-MM-DD dates with start_date <= end_date."}, status=400)
 
+    # Only fixed SQL fragments are joined; user-supplied dates remain parameters.
     conditions = ["a.status = %s"]
     params = ["Completed"]
     if start_date is not None:
@@ -148,6 +150,8 @@ def get_medication_usage_report(request):
     if end_date is not None:
         conditions.append("ts.available_date <= %s")
         params.append(end_date)
+    # Follow prescriptions through consultations to their appointment dates.
+    # DISTINCT prevents joins from counting the same prescription or patient twice.
     sql = """
         SELECT m.medication_id, m.generic_name, m.form, m.manufacturer,
                COUNT(DISTINCT p.prescription_id) AS prescription_count,
@@ -164,10 +168,12 @@ def get_medication_usage_report(request):
     try:
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
+            # Convert database tuples into JSON objects using the column names.
             columns = [column[0] for column in cursor.description]
             results = [dict(zip(columns, row)) for row in cursor.fetchall()]
     except DatabaseError:
         logger.exception("Failed to retrieve medication usage report")
         return JsonResponse({"success": False, "error": "Unable to retrieve medication usage report."}, status=500)
+    # Include the applied date filters; an empty report returns an empty results list.
     return JsonResponse({"success": True, "start_date": start_date,
                          "end_date": end_date, "results": results})
