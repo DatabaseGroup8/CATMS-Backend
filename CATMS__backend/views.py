@@ -97,3 +97,86 @@ def process_insurance_claim(request):
             return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
             
     return JsonResponse({'status': 'error', 'message': 'Only POST method allowed'}, status=405)
+
+
+# ---------------------------------------------------------
+# Clinical Core View
+# ---------------------------------------------------------
+@csrf_exempt
+def add_medication(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            with connection.cursor() as cursor:
+                # Executes the AddMedication procedure designated for the Clinical Core[cite: 1]
+                cursor.execute("CALL AddMedication(%s, %s, %s, %s)", 
+                               [data['patient_id'], data['medication_name'], data['dosage'], data['frequency']])
+            return JsonResponse({'status': 'success', 'message': 'Medication added successfully'}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only POST method allowed'}, status=405)
+
+# ---------------------------------------------------------
+# Registration View
+# ---------------------------------------------------------
+@csrf_exempt
+def register_patient(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            with connection.cursor() as cursor:
+                # Executes the RegisterPatient procedure designated for Identity & Access[cite: 1]
+                # Patient records must include personal details, emergency contact, and insurance[cite: 4]
+                cursor.execute("CALL RegisterPatient(%s, %s, %s, %s, %s)", 
+                               [data['first_name'], data['last_name'], data['contact_number'], data['emergency_contact'], data['insurance_info']])
+            return JsonResponse({'status': 'success', 'message': 'Patient registered successfully'}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only POST method allowed'}, status=405)
+
+# ---------------------------------------------------------
+# Billing View
+# ---------------------------------------------------------
+@csrf_exempt
+def generate_invoice(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            with connection.cursor() as cursor:
+                # Executes the GenerateInvoice procedure designated for the Financial Ledger[cite: 2]
+                cursor.execute("CALL GenerateInvoice(%s)", 
+                               [data['appointment_id']])
+            return JsonResponse({'status': 'success', 'message': 'Invoice generated successfully'}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only POST method allowed'}, status=405)
+
+# ---------------------------------------------------------
+# Reporting View
+# ---------------------------------------------------------
+@csrf_exempt
+def get_revenue_report(request):
+    if request.method == 'GET':
+        try:
+            with connection.cursor() as cursor:
+                # Generates the Doctor-wise revenue report required by the clinic management[cite: 5]
+                cursor.execute("""
+                    SELECT d.doctor_id, d.first_name, d.last_name, SUM(i.total_amount) as total_revenue
+                    FROM Doctor d
+                    JOIN Appointment a ON d.doctor_id = a.doctor_id
+                    JOIN Invoice i ON a.appointment_id = i.appointment_id
+                    GROUP BY d.doctor_id, d.first_name, d.last_name
+                """)
+                rows = cursor.fetchall()
+                report_data = []
+                for row in rows:
+                    report_data.append({
+                        'doctor_id': row[0],
+                        'first_name': row[1],
+                        'last_name': row[2],
+                        'total_revenue': float(row[3]) if row[3] else 0.0
+                    })
+            return JsonResponse({'status': 'success', 'data': report_data}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only GET method allowed'}, status=405)
