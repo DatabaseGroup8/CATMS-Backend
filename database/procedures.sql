@@ -729,22 +729,28 @@ DELIMITER;
 -- Procedure: BookAppointment
 DELIMITER //
 
-CREATE DEFINER=`root`@`localhost` PROCEDURE `BookAppointment`(
+DROP PROCEDURE IF EXISTS `BookAppointment`//
+
+CREATE PROCEDURE `BookAppointment`(
+    -- INPUT PARAMETERS: Data passed in from the Django backend
     IN p_patient_id INT,
     IN p_time_slot_id INT,
+    IN p_type VARCHAR(50),       -- e.g., 'Consultation', 'Follow-up'
     IN p_notes TEXT,
     
-    OUT p_appointment_id INT,
+    -- OUTPUT PARAMETERS: Data sent back to the Django backend
+    OUT p_appointment_id INT,    -- The primary key of the new appointment
+    OUT p_appointment_number INT,-- The calculated queue/token number
     OUT p_error_message VARCHAR(255),
     OUT p_success BOOLEAN
 )
 proc_label: BEGIN
-    DECLARE v_appointment_id CHAR(36);
-    DECLARE v_slot_exists INT DEFAULT 0;
-    DECLARE v_slot_booked TINYINT DEFAULT 0;
+    -- Internal variables used during processing
     DECLARE v_patient_exists INT DEFAULT 0;
     DECLARE v_slot_date DATE;
+    DECLARE v_next_number INT DEFAULT 1;
     
+    -- ERROR HANDLER: If any SQL error occurs, rollback all changes and exit safely
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
@@ -752,14 +758,18 @@ proc_label: BEGIN
         SET p_success = FALSE;
     END;
     
+    -- Initialize output variables
     SET p_success = FALSE;
     SET p_error_message = NULL;
     SET p_appointment_id = NULL;
+    SET p_appointment_number = NULL;
     
+    -- Start the transaction to ensure atomicity (all or nothing)
     START TRANSACTION;
     
+    -- 1. Validate Patient: Ensure the patient exists before attempting to book
     SELECT COUNT(*) INTO v_patient_exists 
-    FROM patient 
+    FROM Patient 
     WHERE patient_id = p_patient_id;
     
     IF v_patient_exists = 0 THEN
@@ -768,63 +778,73 @@ proc_label: BEGIN
         LEAVE proc_label;
     END IF;
     
-    SELECT COUNT(*) INTO v_slot_exists
-    FROM time_slot 
-    WHERE time_slot_id = p_time_slot_id;
+    -- 2. Validate Slot & Lock for Concurrency: 
+    -- 'FOR UPDATE' locks this specific daily time slot row for this transaction.
+    -- This prevents two receptionists from calculating the MAX() token at the exact same millisecond.
+    SELECT available_date INTO v_slot_date
+    FROM Time_Slot 
+    WHERE time_slot_id = p_time_slot_id
+    FOR UPDATE;
     
-    IF v_slot_exists = 0 THEN
+    IF v_slot_date IS NULL THEN
         SET p_error_message = 'Time slot not found';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
     
-    SELECT 
-        is_booked,
-        available_date
-    INTO v_slot_booked, v_slot_date
-    FROM time_slot 
-    WHERE time_slot_id = p_time_slot_id
-    FOR UPDATE;
-    
-    IF v_slot_booked = 1 THEN
-        SET p_error_message = 'Time slot already booked';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    
+    -- Prevent booking appointments for past dates
     IF v_slot_date < CURDATE() THEN
-        SET p_error_message = 'Cannot book time slot in the past';
+        SET p_error_message = 'Cannot book an appointment in the past';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
     
-    
-    UPDATE time_slot 
-    SET is_booked = 1
+    -- 3. Calculate Queue Number: Find the highest token for this specific daily slot.
+    -- COALESCE handles the very first patient by treating NULL as 0, then adds 1.
+    SELECT COALESCE(MAX(appointment_number), 0) + 1 INTO v_next_number 
+    FROM Appointment 
     WHERE time_slot_id = p_time_slot_id;
     
-    IF ROW_COUNT() != 1 THEN
-        SET p_error_message = 'Failed to mark time slot as booked';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
+    -- 4. Create the Appointment: Save the record with the calculated token and current dates.
+    INSERT INTO Appointment (
+        time_slot_id, 
+        patient_id, 
+        appointment_number, 
+        type, 
+        status, 
+        notes, 
+        created_at, 
+        updated_at
+    )
+    VALUES (
+        p_time_slot_id, 
+        p_patient_id, 
+        v_next_number, 
+        p_type, 
+        'Scheduled', 
+        p_notes, 
+        CURDATE(), -- Automatically stamps today's date for created_at
+        CURDATE()  -- Automatically stamps today's date for updated_at
+    );
     
-    INSERT INTO appointment (appointment_id, time_slot_id, patient_id, status, notes)
-    VALUES (p_time_slot_id, p_patient_id, 'Scheduled', p_notes);
-    
+    -- Verify the INSERT was successful
     IF ROW_COUNT() != 1 THEN
         SET p_error_message = 'Failed to create appointment record';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
     
-    SET p_appointment_id = LAST_INSERT_ID();
+    -- 5. Return Success Data: Pass the new IDs back to Django
+    SET p_appointment_id = LAST_INSERT_ID();  -- Grabs the auto-incremented primary key
+    SET p_appointment_number = v_next_number; -- Grabs the calculated queue token
     SET p_success = TRUE;
     SET p_error_message = 'Appointment booked successfully';
     
+    -- Save all changes permanently
     COMMIT;
-END proc_label//
-DELIMITER;
+END //
+
+DELIMITER ;
 
 --...................................................................................................................
 DELIMITER //

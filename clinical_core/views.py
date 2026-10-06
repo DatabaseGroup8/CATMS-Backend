@@ -220,7 +220,7 @@ def add_treatment(request):
         'message': 'Only POST method is allowed'
     }, status=405)
 
-
+@csrf_exempt
 def get_consultation_summary(request):
     # Check that the request uses the GET method
     if request.method == 'GET':

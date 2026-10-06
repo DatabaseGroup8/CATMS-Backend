@@ -69,7 +69,7 @@ def search_patients(request):
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
-
+@csrf_exempt
 def get_patient_appointments(request):
     # Check that the request uses the GET Method
     if request == 'GET':
@@ -163,6 +163,7 @@ def get_patient_appointments(request):
     }, status = 405)
 
 @require_POST
+@csrf_exempt
 def create_time_slot(request):
     """POST JSON: doctor_id, branch_id, available_date, start_time, end_time.
 
@@ -222,6 +223,7 @@ def create_time_slot(request):
 
 
 @require_POST
+@csrf_exempt
 def book_appointment(request):
     """POST JSON: patient_id, time_slot_id and optional notes.
 

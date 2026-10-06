@@ -67,7 +67,7 @@ def get_doctor_performance_report(request):
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
-
+@csrf_exempt
 def get_common_conditons_report(request):
     # Check that the request uses the GET Method
     if request == 'GET':
@@ -123,6 +123,7 @@ def get_common_conditons_report(request):
 
 
 @require_GET
+@csrf_exempt
 def get_medication_usage_report(request):
     """Count prescriptions and distinct patients per medication.
 
