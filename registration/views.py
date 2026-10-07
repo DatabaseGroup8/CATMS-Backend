@@ -11,6 +11,10 @@ from django.views.decorators.http import require_POST
 
 logger = logging.getLogger(__name__)
 
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.db import connection
+
 @csrf_exempt
 def search_patients(request):
     # Step 1: Enforce GET method since we are reading data
@@ -54,7 +58,7 @@ def search_patients(request):
                     # Convert date object to a standard string format
                     'date_of_birth': row[3].strftime('%Y-%m-%d') if row[3] else None,
                     'age': row[4],
-                    'contact_number': row[4]
+                    'contact_number': row[5]
                 })
 
             # Step 5: Return the payload
