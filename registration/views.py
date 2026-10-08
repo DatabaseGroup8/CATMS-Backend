@@ -9,11 +9,12 @@ from django.db import DatabaseError
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-logger = logging.getLogger(__name__)
-
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+
+logger = logging.getLogger(__name__)
+
 
 @csrf_exempt
 def search_patients(request):

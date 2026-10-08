@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'registration',
     'billing',
     'reporting',
+    'accounts',
 ]
 
 MIDDLEWARE = [
