@@ -28,22 +28,20 @@ def search_patients(request):
                 # Add SQL wildcards (%) to find partial matches anywhere in the string
                 search_pattern = f"%{search_query}%"
                 
-                # Step 2: Execute raw SQL with the LIKE operator
+                # Step 2: Execute raw SQL with the LIKE operator using your exact schema
                 cursor.execute("""
                     SELECT 
                         patient_id, 
-                        first_name, 
-                        last_name, 
-                        date_of_birth, 
-                        CalculateAge(date_of_birth) AS age,
-                        contact_number
+                        full_name, 
+                        DOB, 
+                        CalculateAge(DOB) AS age,
+                        contact_no
                     FROM Patient
-                    WHERE first_name LIKE %s 
-                       OR last_name LIKE %s 
-                       OR contact_number LIKE %s
-                    ORDER BY first_name ASC
+                    WHERE full_name LIKE %s 
+                       OR contact_no LIKE %s
+                    ORDER BY full_name ASC
                     LIMIT 50;
-                """, [search_pattern, search_pattern, search_pattern])
+                """, [search_pattern, search_pattern])
                 
                 # Step 3: Fetch all matching rows
                 rows = cursor.fetchall()
@@ -53,12 +51,11 @@ def search_patients(request):
             for row in rows:
                 patients_list.append({
                     'patient_id': row[0],
-                    'first_name': row[1],
-                    'last_name': row[2],
-                    # Convert date object to a standard string format
-                    'date_of_birth': row[3].strftime('%Y-%m-%d') if row[3] else None,
-                    'age': row[4],
-                    'contact_number': row[5]
+                    'full_name': row[1],
+                    # Convert date object to a standard string format securely
+                    'DOB': row[2].strftime('%Y-%m-%d') if row[2] else None,
+                    'age': row[3],
+                    'contact_no': row[4]
                 })
 
             # Step 5: Return the payload
@@ -72,6 +69,59 @@ def search_patients(request):
             return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
+
+@csrf_exempt
+@require_POST
+def quick_register_patient(request):
+    try:
+        # Step 1: Parse the incoming JSON data
+        data = json.loads(request.body)
+        
+        # Step 2: Extract and sanitize minimal required fields
+        first_name = data.get('first_name', '').strip()
+        last_name = data.get('last_name', '').strip()
+        contact_number = data.get('contact_number', '').strip()
+        date_of_birth = data.get('date_of_birth') # Expected format: 'YYYY-MM-DD'
+        nic = data.get('nic', '').strip() # Optional, depending on your exact schema
+        
+        # Basic validation to ensure we don't create blank records
+        if not first_name or not last_name:
+            return JsonResponse({
+                'status': 'error', 
+                'message': 'First name and last name are strictly required.'
+            }, status=400)
+            
+        with connection.cursor() as cursor:
+            # Step 3: Insert the new patient into the database
+            # Adjust the column names below if your Patient table has different mandatory fields
+            cursor.execute("""
+                INSERT INTO Patient (first_name, last_name, date_of_birth, contact_number, nic)
+                VALUES (%s, %s, %s, %s, %s)
+            """, [first_name, last_name, date_of_birth, contact_number, nic])
+            
+            # Step 4: Grab the ID of the row we just inserted
+            cursor.execute("SELECT LAST_INSERT_ID();")
+            new_patient_id = cursor.fetchone()[0]
+            
+        # Step 5: Return the newly created patient data in a format the frontend expects
+        # so it can immediately auto-select this patient for the appointment
+        return JsonResponse({
+            'status': 'success',
+            'message': 'Patient registered successfully.',
+            'data': {
+                'patient_id': new_patient_id,
+                'first_name': first_name,
+                'last_name': last_name,
+                'contact_number': contact_number,
+                'date_of_birth': date_of_birth
+            }
+        }, status=201)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON format sent to server.'}, status=400)
+    except Exception as e:
+        # Catch database constraints (like duplicate NICs) or missing columns
+        return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
 
 @csrf_exempt
 def get_patient_appointments(request):

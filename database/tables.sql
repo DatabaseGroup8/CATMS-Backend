@@ -133,18 +133,21 @@ CREATE TABLE Time_Slot (
     FOREIGN KEY (branch_id) REFERENCES Branch(branch_id)
 );
 
+
 -- 13. Appointment Table
 CREATE TABLE Appointment (
     appointment_id INT AUTO_INCREMENT PRIMARY KEY,
     patient_id INT,
     time_slot_id INT,
+    appointment_number INT NOT NULL,
     type VARCHAR(50),
     status VARCHAR(50),
     notes TEXT,
     updated_at DATE,
     created_at DATE,
     FOREIGN KEY (patient_id) REFERENCES Patient(patient_id),
-    FOREIGN KEY (time_slot_id) REFERENCES Time_Slot(time_slot_id)
+    FOREIGN KEY (time_slot_id) REFERENCES Time_Slot(time_slot_id),
+    UNIQUE (time_slot_id, appointment_number)
 );
 
 -- 14. Medical Record Table
