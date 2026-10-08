@@ -91,3 +91,4 @@ def outstanding_balance(request, invoice_id=None):
         return JsonResponse({"success": False, "error": "Invoice not found."}, status=404)
     # JsonResponse encodes Decimal as a string, preserving monetary precision.
     return JsonResponse({"success": True, "invoice_id": row[0], "outstanding_balance": row[1]})
+

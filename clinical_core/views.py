@@ -375,3 +375,17 @@ def create_consultation(request):
         return JsonResponse({"success": False, "error": "Consultation could not be created. Check the appointment and consultation details."}, status=400)
     # HTTP 201 indicates that the consultation was created.
     return JsonResponse({"success": True, "consultation_id": consultation_id}, status=201)               
+
+@csrf_exempt
+def add_medication(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            with connection.cursor() as cursor:
+                # Executes the AddMedication procedure designated for the Clinical Core[cite: 1]
+                cursor.execute("CALL AddMedication(%s, %s, %s, %s)", 
+                               [data['patient_id'], data['medication_name'], data['dosage'], data['frequency']])
+            return JsonResponse({'status': 'success', 'message': 'Medication added successfully'}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only POST method allowed'}, status=405)

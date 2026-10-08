@@ -347,3 +347,19 @@ def book_appointment(request):
         "appointment_id": appointment_id,
         "token_number": appointment_number
     }, status=201)
+
+
+@csrf_exempt
+def register_patient(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            with connection.cursor() as cursor:
+                # Executes the RegisterPatient procedure designated for Identity & Access[cite: 1]
+                # Patient records must include personal details, emergency contact, and insurance[cite: 4]
+                cursor.execute("CALL RegisterPatient(%s, %s, %s, %s, %s)", 
+                               [data['first_name'], data['last_name'], data['contact_number'], data['emergency_contact'], data['insurance_info']])
+            return JsonResponse({'status': 'success', 'message': 'Patient registered successfully'}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only POST method allowed'}, status=405)
