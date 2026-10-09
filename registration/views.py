@@ -12,6 +12,9 @@ from django.views.decorators.http import require_POST
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+from django.http import JsonResponse
+from django.db import connection, DatabaseError
+from django.views.decorators.http import require_GET
 
 logger = logging.getLogger(__name__)
 
@@ -75,59 +78,52 @@ def search_patients(request):
 @require_POST
 def quick_register_patient(request):
     try:
-        # Step 1: Parse the incoming JSON data
         data = json.loads(request.body)
         
-        # Step 2: Extract and sanitize minimal required fields
-        first_name = data.get('first_name', '').strip()
-        last_name = data.get('last_name', '').strip()
-        contact_number = data.get('contact_number', '').strip()
-        date_of_birth = data.get('date_of_birth') # Expected format: 'YYYY-MM-DD'
-        nic = data.get('nic', '').strip() # Optional, depending on your exact schema
+        # Extract the active branch from the frontend header
+        branch_id = request.headers.get('X-Branch-ID')
+        if not branch_id:
+            return JsonResponse({'status': 'error', 'message': 'Branch context missing.'}, status=401)
         
-        # Basic validation to ensure we don't create blank records
-        if not first_name or not last_name:
-            return JsonResponse({
-                'status': 'error', 
-                'message': 'First name and last name are strictly required.'
-            }, status=400)
+        # Extract matching your exact schema
+        full_name = data.get('full_name', '').strip()
+        contact_no = data.get('contact_no', '').strip()
+        dob = data.get('DOB')  # Expected format: 'YYYY-MM-DD'
+        nic = data.get('NIC', '').strip()
+        gender = data.get('gender', '').strip()
+        
+        if not full_name:
+            return JsonResponse({'status': 'error', 'message': 'Full name is required.'}, status=400)
             
         with connection.cursor() as cursor:
-            # Step 3: Insert the new patient into the database
-            # Adjust the column names below if your Patient table has different mandatory fields
+            # Insert using your exact column names
             cursor.execute("""
-                INSERT INTO Patient (first_name, last_name, date_of_birth, contact_number, nic)
-                VALUES (%s, %s, %s, %s, %s)
-            """, [first_name, last_name, date_of_birth, contact_number, nic])
+                INSERT INTO Patient (full_name, contact_no, DOB, NIC, gender, registered_branch_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, [full_name, contact_no, dob, nic, gender, branch_id])
             
-            # Step 4: Grab the ID of the row we just inserted
             cursor.execute("SELECT LAST_INSERT_ID();")
             new_patient_id = cursor.fetchone()[0]
             
-        # Step 5: Return the newly created patient data in a format the frontend expects
-        # so it can immediately auto-select this patient for the appointment
         return JsonResponse({
             'status': 'success',
-            'message': 'Patient registered successfully.',
             'data': {
                 'patient_id': new_patient_id,
-                'first_name': first_name,
-                'last_name': last_name,
-                'contact_number': contact_number,
-                'date_of_birth': date_of_birth
+                'full_name': full_name,
+                'contact_no': contact_no,
+                'DOB': dob
             }
         }, status=201)
 
     except json.JSONDecodeError:
-        return JsonResponse({'status': 'error', 'message': 'Invalid JSON format sent to server.'}, status=400)
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON.'}, status=400)
     except Exception as e:
-        # Catch database constraints (like duplicate NICs) or missing columns
         return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
 
 @csrf_exempt
 def get_patient_appointments(request):
     # Check that the request uses the GET Method
-    if request == 'GET':
+    if request.method == 'GET':
         try:
             # Get the patient ID and optional appointment status from the query parameters
             patient_id = request.GET.get('patient_id')
@@ -257,7 +253,7 @@ def create_time_slot(request):
             cursor.execute("SET @slot_id = NULL, @slot_message = NULL, @slot_success = 0")
             # Bind request values as parameters; the procedure manages its transaction.
             cursor.execute(
-                "CALL CreateTimeSlot(%s, %s, %s, %s, %s, @slot_id, @slot_message, @slot_success)",
+                "CALL AddTimeSlot(%s, %s, %s, %s, %s, @slot_id, @slot_message, @slot_success)",
                 [data["doctor_id"], data["branch_id"], available_date, start_time, end_time],
             )
             # Consume CALL result sets before selecting its OUT parameters.
@@ -347,3 +343,81 @@ def book_appointment(request):
         "appointment_id": appointment_id,
         "token_number": appointment_number
     }, status=201)
+    
+    
+
+@require_GET
+def get_daily_schedule(request):
+    """
+    Retrieves the doctor schedule (time slots) for a specific date and branch.
+    Expects an optional query parameter: ?date=YYYY-MM-DD (defaults to today).
+    """
+    try:
+        target_date_str = request.GET.get('date')
+        target_date = date.fromisoformat(target_date_str) if target_date_str else date.today()
+
+        branch_id = request.headers.get('X-Branch-ID')
+        if not branch_id:
+            return JsonResponse({'status': 'error', 'message': 'X-Branch-ID header is required.'}, status=400)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    ts.time_slot_id,
+                    u.full_name AS doctor_name,
+                    e.role AS specialty, 
+                    ts.available_date,
+                    ts.start_time,
+                    ts.end_time,
+                    ts.current_patients,
+                    ts.max_patients
+                FROM Time_Slot ts
+                JOIN Doctor d ON ts.doctor_id = d.doctor_id
+                JOIN Employee e ON d.employee_id = e.employee_id
+                JOIN User u ON e.user_id = u.user_id
+                WHERE ts.available_date = %s 
+                  AND e.branch_id = %s
+                ORDER BY ts.start_time ASC;
+            """, [target_date, branch_id])
+            
+            rows = cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+
+        schedule_list = []
+        for row in rows:
+            slot_data = dict(zip(columns, row))
+            
+            current_count = slot_data['current_patients'] or 0
+            max_count = slot_data['max_patients'] or 0
+            
+            # Dynamic capacity logic
+            status = "Available" if current_count < max_count else "Fully Booked"
+
+            schedule_list.append({
+                'time_slot_id': slot_data['time_slot_id'],
+                'doctor_name': slot_data['doctor_name'],
+                'specialty': slot_data['specialty'],
+                'date': slot_data['available_date'].strftime('%Y-%m-%d') if slot_data['available_date'] else None,
+                'start_time': str(slot_data['start_time']), 
+                'end_time': str(slot_data['end_time']),
+                'current_patients': current_count,
+                'max_patients': max_count,
+                'status': status
+            })
+
+        return JsonResponse({
+            'status': 'success',
+            'date': target_date.strftime('%Y-%m-%d'),
+            'branch_id': int(branch_id),
+            'count': len(schedule_list),
+            'data': schedule_list
+        }, status=200)
+
+    except ValueError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid date format. Use YYYY-MM-DD.'}, status=400)
+    except DatabaseError:
+        logger.exception("Database error in get_daily_schedule")
+        return JsonResponse({'status': 'critical_error', 'message': 'Unable to retrieve schedule.'}, status=500)
+    except Exception as e:
+        logger.exception("Unexpected error in get_daily_schedule")
+        return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)

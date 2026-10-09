@@ -1,5 +1,6 @@
 from django.shortcuts import render
 import json
+from datetime import date
 import logging
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -121,104 +122,6 @@ def get_patient_history(request, patient_id):
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
-
-@csrf_exempt
-def add_treatment(request):
-    #Check that the request uses the POST method
-    if request.method != "POST":
-        return JsonResponse(
-            {"error": "Only POST method is allowed."},
-            status = 405
-        )
-
-        try:
-            # Read the JSON data sent in the request body
-            data = json.loads(request.body)
-
-            # Get the required values from the request
-            medical_record_id = data.get("medical_record_id")
-            treatment_service_code = data.get("treatment_service_code")
-
-            # Make sure both required values were provided
-            if medical_record_id is None or treatment_service_code is None:
-                return JsonResponse(
-                    {
-                        "error": "medical_record_id and treatment_service_code are required."
-                    },
-                    status = 400
-                )
-            # Open a database cursor to execute raw SQL
-            with connection.cursor() as cursor:
-
-                # Call the AddTreatment stored procedure
-                # The procedure returns the treatment ID,
-                # an error message, and a success flag through OUT parameters
-                cursor.execute(
-                    """
-                    CALL AddTreatment(%s, %s, @p_treatment_id, @p_error_message, @p_success)
-                    """,
-                    [
-                        medical_record_id,
-                        treatment_service_code
-                    ]
-                )
-
-                # Retrieve the values returned by the stored procedure
-                cursor.execute(
-                    """
-                    SELECT
-                        @p_treatment_id,
-                        @p_error_message,
-                        @p_success
-                    """
-                )
-
-                result = cursor.fetchone()
-
-            treatment_id, error_message, success = result
-
-            # If the procedure was successful, return the created treatment ID
-            if success:
-                return JsonResponse(
-                    {
-                        "success" : True,
-                        "treatment_id" : treatment_id,
-                        "message" : "Treatment added successfully."
-                    },
-                    status = 201
-                )
-
-            # If the procedure failed, return the error message
-            return JsonResponse(
-                {
-                    "success": False,
-                    "error": error_message 
-                },
-                status = 400
-            )
-
-        # Handle invalid JSON sent by the client
-        except json.JSONDecodeError:
-            return JsonResponse(
-                {"error": "Invalid JSON request body."},
-                status = 400
-            )
-
-        # Handle unexpected database or server errors
-        except Exception as e:
-            return JsonResponse(
-                {
-                    "success": False,
-                    "error": str(e)
-                },
-                status = 500
-            )
-
-    # Reject requests that are not POST
-    return JsonResponse({
-        'status': 'error',
-        'message': 'Only POST method is allowed'
-    }, status=405)
 
 @csrf_exempt
 def get_consultation_summary(request):
@@ -374,4 +277,149 @@ def create_consultation(request):
         logger.warning("CreateConsultationWithDetails failed: %s", message)
         return JsonResponse({"success": False, "error": "Consultation could not be created. Check the appointment and consultation details."}, status=400)
     # HTTP 201 indicates that the consultation was created.
-    return JsonResponse({"success": True, "consultation_id": consultation_id}, status=201)               
+    return JsonResponse({"success": True, "consultation_id": consultation_id}, status=201)   
+
+
+
+@csrf_exempt
+@require_POST
+def add_medication(request):
+    """Adds a new medication to the clinical dictionary."""
+    try:
+        data = json.loads(request.body)
+        
+        # Extract fields matching the Medication table[cite: 4]
+        generic_name = data.get('generic_name')
+        manufacturer = data.get('manufacturer')
+        form = data.get('form')
+        contraindications = data.get('contraindications')
+        side_effects = data.get('side_effects')
+
+        if not generic_name:
+            return JsonResponse({'status': 'error', 'message': 'Generic name is required.'}, status=400)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO Medication (generic_name, manufacturer, form, contraindications, side_effects)
+                VALUES (%s, %s, %s, %s, %s);
+            """, [generic_name, manufacturer, form, contraindications, side_effects])
+            new_id = cursor.lastrowid
+
+        return JsonResponse({'status': 'success', 'message': 'Medication added successfully', 'medication_id': new_id}, status=201)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON payload.'}, status=400)
+    except DatabaseError as e:
+        logger.exception("Database error in add_medication")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@csrf_exempt
+@require_POST
+def add_condition_category(request):
+    """Adds a new condition category."""
+    try:
+        data = json.loads(request.body)
+        category_name = data.get('category_name') # Maps to Condition_category table[cite: 4]
+
+        if not category_name:
+            return JsonResponse({'status': 'error', 'message': 'Category name is required.'}, status=400)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO Condition_category (category_name)
+                VALUES (%s);
+            """, [category_name])
+            new_id = cursor.lastrowid
+
+        return JsonResponse({'status': 'success', 'message': 'Condition category added successfully', 'condition_category_id': new_id}, status=201)
+
+    except Exception as e:
+        logger.exception("Error in add_condition_category")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@csrf_exempt
+@require_POST
+def add_condition(request):
+    """Adds a specific medical condition under a category."""
+    try:
+        data = json.loads(request.body)
+        
+        # Extract fields matching the Conditions table[cite: 4]
+        condition_category_id = data.get('condition_category_id')
+        condition_name = data.get('condition_name')
+        description = data.get('description')
+
+        if not condition_category_id or not condition_name:
+            return JsonResponse({'status': 'error', 'message': 'Condition category ID and condition name are required.'}, status=400)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO Conditions (condition_category_id, condition_name, description)
+                VALUES (%s, %s, %s);
+            """, [condition_category_id, condition_name, description])
+            new_id = cursor.lastrowid
+
+        return JsonResponse({'status': 'success', 'message': 'Condition added successfully', 'condition_id': new_id}, status=201)
+
+    except Exception as e:
+        logger.exception("Error in add_condition")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@csrf_exempt
+@require_POST
+def add_treatment_category(request):
+    """Adds a new category for treatments."""
+    try:
+        data = json.loads(request.body)
+        
+        # Extract fields matching Treatment_Category table[cite: 4]
+        category_name = data.get('category_name')
+        description = data.get('description')
+
+        if not category_name:
+            return JsonResponse({'status': 'error', 'message': 'Category name is required.'}, status=400)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO Treatment_Category (category_name, description)
+                VALUES (%s, %s);
+            """, [category_name, description])
+            new_id = cursor.lastrowid
+
+        return JsonResponse({'status': 'success', 'message': 'Treatment category added successfully', 'treatment_category_id': new_id}, status=201)
+
+    except Exception as e:
+        logger.exception("Error in add_treatment_category")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@csrf_exempt
+@require_POST
+def add_treatment_catalogue(request):
+    """Adds a specific treatment service to the catalogue."""
+    try:
+        data = json.loads(request.body)
+        
+        # Extract fields matching Treatment_Catalogue table[cite: 4]
+        treatment_category_id = data.get('treatment_category_id')
+        treatment_name = data.get('treatment_name')
+        base_price = data.get('base_price')
+        duration = data.get('duration')
+        
+        # Automatically set updated_date to today[cite: 4]
+        updated_date = date.today().strftime('%Y-%m-%d')
+
+        if not treatment_category_id or not treatment_name or base_price is None:
+            return JsonResponse({'status': 'error', 'message': 'Category ID, treatment name, and base price are required.'}, status=400)
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO Treatment_Catalogue (treatment_category_id, treatment_name, base_price, duration, updated_date)
+                VALUES (%s, %s, %s, %s, %s);
+            """, [treatment_category_id, treatment_name, base_price, duration, updated_date])
+            new_code = cursor.lastrowid
+
+        return JsonResponse({'status': 'success', 'message': 'Treatment added to catalogue successfully', 'treatment_service_code': new_code}, status=201)
+
+    except Exception as e:
+        logger.exception("Error in add_treatment_catalogue")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)            

@@ -25,10 +25,6 @@ urlpatterns = [
     path('api/registration/', include('registration.urls')),
     path('api/billing/', include('billing.urls')),
     path('api/reporting/', include('reporting.urls')),
-    # GET request capturing the invoice ID directly from the URL
-    path('balance/<int:invoice_id>/', views.get_outstanding_balance, name='get_outstanding_balance'),
-    
-    # POST requests that read their parameters from the JSON body
-    path('payment/record/', views.record_payment, name='record_payment'),
-    path('claim/process/', views.process_insurance_claim, name='process_insurance_claim'),
+    path('', include('accounts.urls')),
+
 ]
