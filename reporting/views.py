@@ -1,331 +1,114 @@
-from django.shortcuts import render
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.db import connection
+"""Five management reports for CATMS (MySQL 8, plain Django).
+
+Financial report periods use Invoice.created_at (invoice cohort), while
+appointment and treatment reports use Time_Slot.available_date.
+Patient and insurer payments are counted to date for the selected invoice cohort;
+this is NOT a cash-flow-by-payment-date report.
+
+Copy into CATMS/reporting/required_reports.py.
+"""
 import logging
+import re
 from datetime import date
-from accounts.decorators import jwt_required
-from django.db import DatabaseError
+from decimal import Decimal
+
+from django.db import DatabaseError, connection
+from django.http import JsonResponse
 from django.views.decorators.http import require_GET
+
+from accounts.decorators import jwt_required
 
 logger = logging.getLogger(__name__)
 
-@require_GET
-@jwt_required(allowed_roles=['Manager'])
-def get_doctor_performance_report(request):
 
+def _error(message, status=400):
+    return JsonResponse({'status': 'error', 'message': message}, status=status)
+
+
+def _manager_branch(request):
+    """Re-check JWT role/branch against the *current* Employee record."""
     try:
-        # Get manager's branch from the verified JWT
-        branch_id = getattr(request, 'branch_id', None)
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+    except (TypeError, ValueError, AttributeError):
+        return None
 
+    if branch_id <= 0 or employee_id <= 0:
+        return None
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT e.branch_id
+            FROM Employee e
+            WHERE e.employee_id = %s
+              AND e.branch_id = %s
+              AND e.role = 'Manager'
+              AND e.status = 'Active'
+            LIMIT 1
+        """, [employee_id, branch_id])
+        row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def _date_param(request, key):
+    """Require one ISO YYYY-MM-DD query parameter."""
+    raw = request.GET.get(key)
+    if not raw or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', raw):
+        raise ValueError(f'{key} is required (YYYY-MM-DD)')
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f'{key} is invalid') from exc
+
+
+def _period(request):
+    start = _date_param(request, 'start_date')
+    end = _date_param(request, 'end_date')
+    if start > end:
+        raise ValueError('start_date must be on or before end_date')
+    return start, end
+
+
+def _money(value):
+    return f'{Decimal(value or 0):.2f}'
+
+
+@jwt_required(allowed_roles=['Manager'])
+@require_GET
+def branch_daily_appointments(request):
+    """Report 1: Scheduled/completed/cancelled on a specific appointment date."""
+    try:
+        day = _date_param(request, 'date')
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
+        branch_id = _manager_branch(request)
         if branch_id is None:
-            return JsonResponse({
-                'status': 'error',
-                'message': 'Manager branch not found'
-            }, status=403)
-
+            return _error('Manager branch access denied', 403)
         with connection.cursor() as cursor:
             cursor.execute("""
-                SELECT
-                    d.doctor_id,
-                    u.full_name,
-                    COALESCE(
-                        sp.specializations,
-                        'Not assigned'
-                    ) AS specialization,
-
-                    COALESCE(
-                        stats.total_appointments, 0
-                    ) AS total_appointments,
-
-                    COALESCE(
-                        stats.completed_appointments, 0
-                    ) AS completed_appointments,
-
-                    COALESCE(
-                        stats.cancelled_appointments, 0
-                    ) AS cancelled_appointments
-
-                FROM Doctor d
-
-                INNER JOIN Employee e
-                    ON d.employee_id = e.employee_id
-
-                INNER JOIN `User` u
-                    ON e.user_id = u.user_id
-
-                -- Aggregate specializations separately
-                LEFT JOIN (
-                    SELECT
-                        ds.doctor_id,
-                        GROUP_CONCAT(
-                            DISTINCT s.specialization_name
-                            ORDER BY s.specialization_name
-                            SEPARATOR ', '
-                        ) AS specializations
-
-                    FROM Doctor_Specialization ds
-
-                    INNER JOIN Specialization s
-                        ON ds.specialization_id =
-                           s.specialization_id
-
-                    GROUP BY ds.doctor_id
-                ) sp
-                    ON d.doctor_id = sp.doctor_id
-
-                -- Aggregate appointment counts separately
-                LEFT JOIN (
-                    SELECT
-                        ts.doctor_id,
-                        ts.branch_id,
-
-                        COUNT(a.appointment_id)
-                            AS total_appointments,
-
-                        SUM(
-                            CASE
-                                WHEN a.status = 'Completed'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS completed_appointments,
-
-                        SUM(
-                            CASE
-                                WHEN a.status = 'Cancelled'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS cancelled_appointments
-
-                    FROM Time_Slot ts
-
-                    LEFT JOIN Appointment a
-                        ON ts.time_slot_id = a.time_slot_id
-
-                    GROUP BY
-                        ts.doctor_id,
-                        ts.branch_id
-                ) stats
-                    ON d.doctor_id = stats.doctor_id
-                    AND stats.branch_id = e.branch_id
-
-                WHERE e.branch_id = %s
-
-                ORDER BY
-                    completed_appointments DESC,
-                    u.full_name ASC
-
-            """, [branch_id])
-
-            rows = cursor.fetchall()
-
-        performance_data = []
-
-        for row in rows:
-            performance_data.append({
-                'doctor_id': row[0],
-                'doctor_name': row[1],
-                'specialization': row[2],
-                'total_appointments': int(row[3]),
-                'completed_appointments': int(row[4]),
-                'cancelled_appointments': int(row[5])
-            })
-
-        return JsonResponse({
-            'status': 'success',
-            'doctor_count': len(performance_data),
-            'data': performance_data
-        }, status=200)
-
-    except Exception:
-        logger.exception(
-            'Failed to generate doctor performance report'
-        )
-
-        return JsonResponse({
-            'status': 'error',
-            'message': 'Unable to generate report'
-        }, status=500)
-
-@jwt_required(allowed_roles=['Manager'])
-@require_GET
-def get_common_conditons_report(request):
-    """Counts conditions on patients registered at the manager's branch.
-
-    This is NOT a diagnosis-at-branch report because Patient_condition lacks a
-    consultation/branch identifier in the current schema.
-    """
-    branch_id = getattr(request, 'branch_id', None)
-    employee_id = getattr(request, 'employee_id', None)
-    if not branch_id or not employee_id:
-        return JsonResponse({'status':'error','message':'Invalid manager context'}, status=403)
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT c.condition_id, c.condition_name,
-                       COUNT(pc.patient_condition_id) AS occurrence_count
-                FROM Conditions c
-                LEFT JOIN Patient_condition pc ON pc.condition_id = c.condition_id
-                    AND EXISTS (
-                        SELECT 1 FROM Patient p
-                        WHERE p.patient_id=pc.patient_id
-                          AND p.registered_branch_id=%s
-                    )
-                WHERE EXISTS (
-                    SELECT 1 FROM Employee e
-                    WHERE e.employee_id=%s AND e.branch_id=%s
-                      AND e.status='Active' AND e.role='Manager'
-                )
-                GROUP BY c.condition_id,c.condition_name
-                ORDER BY occurrence_count DESC,c.condition_name
-            """, [branch_id, employee_id, branch_id])
-            rows=cursor.fetchall()
-    except DatabaseError:
-        logger.exception('Common conditions report failed')
-        return JsonResponse({'status':'error','message':'Unable to generate report'},status=500)
-    return JsonResponse({'status':'success','data':[
-        {'condition_id':r[0],'condition_name':r[1],'occurrence_count':r[2]}
-        for r in rows]})
-
-
-
-@require_GET
-@csrf_exempt
-@jwt_required(allowed_roles=['Manager'])
-def get_medication_usage_report(request):
-    """Count prescriptions and distinct patients per medication.
-
-    Optional inclusive start_date/end_date filters use the appointment date.
-    Only completed consultations count. Usage means prescription records,
-    since the schema does not store dispensed quantities.
-    """
-    # Either date boundary may be omitted for an open-ended reporting period.
-    try:
-        start_date = request.GET.get("start_date")
-        end_date = request.GET.get("end_date")
-        start_date = date.fromisoformat(start_date) if start_date is not None else None
-        end_date = date.fromisoformat(end_date) if end_date is not None else None
-        if start_date and end_date and start_date > end_date:
-            raise ValueError("start_date must not be after end_date.")
-    except ValueError:
-        return JsonResponse({"success": False, "error": "Use valid YYYY-MM-DD dates with start_date <= end_date."}, status=400)
-
-    # Only fixed SQL fragments are joined; user-supplied dates remain parameters.
-    conditions = ["a.status = %s"]
-    params = ["Completed"]
-    if start_date is not None:
-        conditions.append("ts.available_date >= %s")
-        params.append(start_date)
-    if end_date is not None:
-        conditions.append("ts.available_date <= %s")
-        params.append(end_date)
-    # Follow prescriptions through consultations to their appointment dates.
-    # DISTINCT prevents joins from counting the same prescription or patient twice.
-    sql = """
-        SELECT m.medication_id, m.generic_name, m.form, m.manufacturer,
-               COUNT(DISTINCT p.prescription_id) AS prescription_count,
-               COUNT(DISTINCT a.patient_id) AS patient_count
-        FROM Medication m
-        JOIN Prescription p ON p.medication_id = m.medication_id
-        JOIN consultation_record cr ON cr.medical_record_id = p.medical_record_id
-        JOIN Appointment a ON a.appointment_id = cr.appointment_id
-        JOIN Time_Slot ts ON ts.time_slot_id = a.time_slot_id
-        WHERE """ + " AND ".join(conditions) + """
-        GROUP BY m.medication_id, m.generic_name, m.form, m.manufacturer
-        ORDER BY prescription_count DESC, m.medication_id
-    """
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(sql, params)
-            # Convert database tuples into JSON objects using the column names.
-            columns = [column[0] for column in cursor.description]
-            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    except DatabaseError:
-        logger.exception("Failed to retrieve medication usage report")
-        return JsonResponse({"success": False, "error": "Unable to retrieve medication usage report."}, status=500)
-    # Include the applied date filters; an empty report returns an empty results list.
-    return JsonResponse({"success": True, "start_date": start_date,
-                         "end_date": end_date, "results": results})
-
-
-
-@require_GET
-@jwt_required(allowed_roles=['Manager'])
-def get_revenue_report(request):
-
-    try:
-        # Get the manager's branch from JWT
-        branch_id = getattr(request, 'branch_id', None)
-
-        if branch_id is None:
-            return JsonResponse({
-                'status': 'error',
-                'message': 'Manager branch not found'
-            }, status=403)
-
-        with connection.cursor() as cursor:
-
-            cursor.execute("""
-                SELECT
-                    d.doctor_id,
-                    u.full_name,
-
-                    COALESCE(
-                        SUM(i.sub_total), 0
-                    ) AS total_revenue
-
-                FROM Doctor d
-
-                INNER JOIN Employee e
-                    ON d.employee_id = e.employee_id
-
-                INNER JOIN `User` u
-                    ON e.user_id = u.user_id
-
+                SELECT b.branch_id, b.branch_name,
+                       COUNT(a.appointment_id) AS total,
+                       SUM(CASE WHEN a.status='Scheduled' THEN 1 ELSE 0 END) AS scheduled,
+                       SUM(CASE WHEN a.status='Completed' THEN 1 ELSE 0 END) AS completed,
+                       SUM(CASE WHEN a.status='Cancelled' THEN 1 ELSE 0 END) AS cancelled
+                FROM Branch b
                 LEFT JOIN Time_Slot ts
-                    ON d.doctor_id = ts.doctor_id
-                    AND ts.branch_id = e.branch_id
-
-                LEFT JOIN Appointment a
-                    ON ts.time_slot_id = a.time_slot_id
-                    AND a.status = 'Completed'
-
-                LEFT JOIN Invoice i
-                    ON a.appointment_id = i.appointment_id
-
-                WHERE e.branch_id = %s
-
-                GROUP BY
-                    d.doctor_id,
-                    u.full_name
-
-                ORDER BY total_revenue DESC
-
-            """, [branch_id])
-
-            rows = cursor.fetchall()
-
-        report_data = []
-
-        for row in rows:
-            report_data.append({
-                'doctor_id': row[0],
-                'doctor_name': row[1],
-                'total_revenue': format(row[2], '.2f')
-            })
-
-        return JsonResponse({
-            'status': 'success',
-            'doctor_count': len(report_data),
-            'data': report_data
-        }, status=200)
-
-    except Exception:
-        logger.exception('Failed to generate revenue report')
-
-        return JsonResponse({
-            'status': 'error',
-            'message': 'Unable to generate revenue report'
-        }, status=500)
+                    ON ts.branch_id=b.branch_id AND ts.available_date=%s
+                LEFT JOIN Appointment a ON a.time_slot_id=ts.time_slot_id
+                WHERE b.branch_id=%s
+                GROUP BY b.branch_id,b.branch_name
+            """, [day, branch_id])
+            row = cursor.fetchone()
+        if row is None:
+            return _error('Branch not found', 404)
+        return JsonResponse({'status': 'success', 'date': day.isoformat(), 'data': {
+            'branch_id': row[0], 'branch_name': row[1],
+            'total_appointments': int(row[2] or 0),
+            'scheduled': int(row[3] or 0),
+            'completed': int(row[4] or 0),
+            'cancelled': int(row[5] or 0),
+        }})
+    except DatabaseError:
+        logger.exception('Branch-wise appointments report failed')
+        return _error('Unable to retrieve appointment report', 500)
