@@ -97,6 +97,7 @@ CREATE PROCEDURE CreateConsultationWithDetails(
 )
 proc_label: BEGIN
     DECLARE v_medical_record_id INT;
+    DECLARE v_invoice_id INT;
     DECLARE v_appointment_exists INT DEFAULT 0;
     
     -- JSON loop variables
@@ -157,6 +158,14 @@ proc_label: BEGIN
 
     INSERT INTO Invoice (appointment_id, sub_total, insurance_claimed_amount)
     VALUES (p_appointment_id, 0.00, 0.00);
+
+    -- Get the new invoice ID
+    SET v_invoice_id = LAST_INSERT_ID();
+
+    -- Link invoice to consultation
+    UPDATE Consultation_record
+    SET invoice_id = v_invoice_id
+    WHERE consultation_rec_id = p_consultation_id;
 
     -- 8. Parse and Insert Treatments
     IF p_treatments IS NOT NULL AND JSON_LENGTH(p_treatments) > 0 THEN
@@ -440,10 +449,11 @@ END //
 DELIMITER;
 
 --.................................................................................................................
--- Procedure: Record Payment
+
 DELIMITER //
 
-DROP PROCEDURE IF EXISTS `RecordPayment`$$
+DROP PROCEDURE IF EXISTS `RecordPayment`//
+
 CREATE PROCEDURE `RecordPayment`(
     IN p_invoice_id INT,
     IN p_user_id INT,
@@ -456,50 +466,115 @@ CREATE PROCEDURE `RecordPayment`(
 )
 proc_label: BEGIN
     DECLARE v_outstanding DECIMAL(10,2);
-    
+    DECLARE v_patient_id INT DEFAULT NULL;
+    DECLARE v_appointment_id INT DEFAULT NULL;
+
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        GET DIAGNOSTICS CONDITION 1
+            p_error_message = MESSAGE_TEXT;
         ROLLBACK;
         SET p_success = FALSE;
+        SET p_payment_id = NULL;
     END;
-    
+
     SET p_success = FALSE;
-    
+    SET p_payment_id = NULL;
+    SET p_error_message = NULL;
+
     START TRANSACTION;
-    
-    -- Check balance using the custom function
-    SET v_outstanding = CalculateOutstandingBalance(p_invoice_id);
-    
-    IF p_payment_amount <= 0 THEN
+
+    -- Find the patient and appointment belonging to this invoice.
+    -- Lock the invoice to prevent concurrent overpayment.
+    SELECT i.appointment_id, a.patient_id
+    INTO v_appointment_id, v_patient_id
+    FROM Invoice i
+    JOIN Appointment a
+        ON i.appointment_id = a.appointment_id
+    WHERE i.Invoice_id = p_invoice_id
+    FOR UPDATE;
+
+    IF v_patient_id IS NULL THEN
+        SET p_error_message = 'Invoice or patient not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check that the supplied appointment matches the invoice
+    IF p_appointment_id IS NULL
+       OR p_appointment_id <> v_appointment_id THEN
+        SET p_error_message = 'Appointment does not match invoice';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Validate payment amount
+    IF p_payment_amount IS NULL OR p_payment_amount <= 0 THEN
         SET p_error_message = 'Payment amount must be greater than zero';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
-    
+
+    -- Payment table allows only VARCHAR(20)
+    IF p_payment_method IS NULL
+       OR TRIM(p_payment_method) = ''
+       OR CHAR_LENGTH(p_payment_method) > 20 THEN
+        SET p_error_message = 'Invalid payment method';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Calculate the remaining balance
+    SET v_outstanding =
+        CalculateOutstandingBalance(p_invoice_id);
+
+    IF v_outstanding IS NULL THEN
+        SET p_error_message = 'Unable to calculate outstanding balance';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
     IF p_payment_amount > v_outstanding THEN
         SET p_error_message = 'Payment exceeds outstanding balance';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
-    
-    -- Insert the payment record[cite: 1, 2]
-    INSERT INTO Payment (Invoice_id, patient_id, payment_method, status, payment_date, payment_amount)
-    VALUES (p_invoice_id, p_user_id, p_payment_method, 'Completed', CURDATE(), p_payment_amount);
-    
+
+    -- Record the payment using the correct patient_id
+    INSERT INTO Payment (
+        Invoice_id,
+        patient_id,
+        payment_method,
+        status,
+        payment_date,
+        payment_amount
+    )
+    VALUES (
+        p_invoice_id,
+        v_patient_id,
+        p_payment_method,
+        'Completed',
+        CURDATE(),
+        p_payment_amount
+    );
+
     SET p_payment_id = LAST_INSERT_ID();
+
+    COMMIT;
+
     SET p_success = TRUE;
     SET p_error_message = 'Payment recorded successfully';
-    
-    COMMIT;
+
 END proc_label//
-DELIMITER;
+
+DELIMITER ;
+
 
 --...................................................................................................................................
 -- Procedure: Process Insurance Claim
 DELIMITER //
 
-DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`$$
+DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`//
 CREATE PROCEDURE `ProcessInsuranceClaim`(
     IN p_invoice_id INT,
     IN p_insurance_id INT,
@@ -861,6 +936,7 @@ CREATE PROCEDURE GenerateInvoice(
 )
 proc_label: BEGIN
     DECLARE v_appointment_exists INT DEFAULT 0;
+    DECLARE v_existing_invoice_id INT DEFAULT NULL;
     
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -882,6 +958,21 @@ proc_label: BEGIN
     IF v_appointment_exists = 0 THEN
         SET p_error_message = 'Cannot generate invoice: Appointment not completed';
         ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    -- Check whether an invoice already exists
+    SELECT MIN(Invoice_id)
+    INTO v_existing_invoice_id
+    FROM Invoice
+    WHERE appointment_id = p_appointment_id;
+
+    IF v_existing_invoice_id IS NOT NULL THEN
+        SET p_invoice_id = v_existing_invoice_id;
+        SET p_success = TRUE;
+        SET p_error_message = 'Existing invoice returned';
+
+        COMMIT;
         LEAVE proc_label;
     END IF;
     
@@ -1186,9 +1277,9 @@ proc_label: BEGIN
     WHERE e.branch_id = v_branch_id
       AND (p_role IS NULL OR p_role = '' OR e.role = p_role)
       AND (
-            p_active_only = FALSE
+            COALESCE(p_active_only, FALSE) = FALSE
             OR e.status = 'Active'
-          );
+        )
 
     -- Return staff
     SELECT
@@ -1236,9 +1327,9 @@ proc_label: BEGIN
           )
 
       AND (
-            p_active_only = FALSE
+            COALESCE(p_active_only, FALSE) = FALSE
             OR e.status = 'Active'
-          )
+        )
 
     ORDER BY u.full_name
 
@@ -1379,9 +1470,9 @@ DELIMITER ;
 --...............................................................................................................................
 --Procedure : Register Employee
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS RegisterEmployee$$
+DROP PROCEDURE IF EXISTS RegisterEmployee//
 
 CREATE PROCEDURE RegisterEmployee(
     IN p_address_line_1 VARCHAR(150),
@@ -1520,16 +1611,16 @@ BEGIN
 
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
 
 --...............................................................................................................................
 --Procedure : Register Doctor
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS RegisterDoctor$$
+DROP PROCEDURE IF EXISTS RegisterDoctor//
 
 CREATE PROCEDURE RegisterDoctor(
     IN p_address_line_1 VARCHAR(150),
@@ -1704,16 +1795,16 @@ BEGIN
 
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
 
 --...............................................................................................................................
 --Procedure : Register Patient
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS RegisterPatient$$
+DROP PROCEDURE IF EXISTS RegisterPatient//
 
 CREATE PROCEDURE RegisterPatient(
     IN p_address_line_1 VARCHAR(150),
@@ -1842,16 +1933,16 @@ BEGIN
         END IF;
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
 
 --...............................................................................................................................
 --Procedure : Authenticate User
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS AuthenticateUser$$
+DROP PROCEDURE IF EXISTS AuthenticateUser//
 
 CREATE PROCEDURE AuthenticateUser(
     IN p_email VARCHAR(150),
@@ -1901,6 +1992,6 @@ BEGIN
 
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
