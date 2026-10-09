@@ -547,7 +547,7 @@ DELIMITER ;
 DELIMITER //
 DROP PROCEDURE IF EXISTS `AddTimeSlot`$$
 
-CREATE DEFINER=`root`@`localhost` PROCEDURE `AddTimeSlot`(
+CREATE PROCEDURE `AddTimeSlot`(
     IN p_doctor_id CHAR(36),
     IN p_branch_id CHAR(36),
     IN p_available_date DATE,
@@ -649,80 +649,80 @@ DELIMITER;
 
 --...................................................................................................................................
 -- Procedure: CreateTimeSlot
-DELIMITER //
-CREATE DEFINER=`root`@`localhost` PROCEDURE `CreateTimeSlot`(
-    IN p_doctor_id INT,
-    IN p_branch_id INT,
-    IN p_available_date DATE,
-    IN p_start_time TIME,
-    IN p_end_time TIME,
-    OUT p_time_slot_id CHAR(36),
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    -- ...existing code from AddTimeSlot...
-    DECLARE v_time_slot_id INT;
-    DECLARE v_doctor_exists INT DEFAULT 0;
-    DECLARE v_branch_exists INT DEFAULT 0;
-    --If an SQL error happens while executing this block, run the error-handling code and then exit the block
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1
-            p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    SET p_time_slot_id = NULL;
-    START TRANSACTION;
-    SELECT COUNT(*) INTO v_doctor_exists FROM doctor WHERE doctor_id = p_doctor_id;
-    IF v_doctor_exists = 0 THEN
-        SET p_error_message = 'Doctor not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    SELECT COUNT(*) INTO v_branch_exists FROM branch WHERE branch_id = p_branch_id AND is_active = TRUE;
-    IF v_branch_exists = 0 THEN
-        SET p_error_message = 'Branch not found or inactive';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    IF p_available_date IS NULL THEN
-        SET p_error_message = 'Available date is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    IF p_start_time IS NULL THEN
-        SET p_error_message = 'Start time is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    IF p_end_time IS NULL THEN
-        SET p_error_message = 'End time is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    IF p_end_time <= p_start_time THEN
-        SET p_error_message = 'End time must be after start time';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    SET v_time_slot_id = UUID();
-    INSERT INTO time_slot (
-        time_slot_id, doctor_id, branch_id, available_date, 
-        is_booked, start_time, end_time
-    ) VALUES (
-        v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
-        FALSE, p_start_time, p_end_time
-    );
-    SET p_time_slot_id = v_time_slot_id;
-    SET p_success = TRUE;
-    SET p_error_message = 'Time slot added successfully';
-    COMMIT;
-END proc_label//
-DELIMITER;
+-- DELIMITER //
+-- CREATE PROCEDURE `CreateTimeSlot`(
+--     IN p_doctor_id INT,
+--     IN p_branch_id INT,
+--     IN p_available_date DATE,
+--     IN p_start_time TIME,
+--     IN p_end_time TIME,
+--     OUT p_time_slot_id CHAR(36),
+--     OUT p_error_message VARCHAR(255),
+--     OUT p_success BOOLEAN
+-- )
+-- proc_label: BEGIN
+--     -- ...existing code from AddTimeSlot...
+--     DECLARE v_time_slot_id INT;
+--     DECLARE v_doctor_exists INT DEFAULT 0;
+--     DECLARE v_branch_exists INT DEFAULT 0;
+--     --If an SQL error happens while executing this block, run the error-handling code and then exit the block
+--     DECLARE EXIT HANDLER FOR SQLEXCEPTION
+--     BEGIN
+--         GET DIAGNOSTICS CONDITION 1
+--             p_error_message = MESSAGE_TEXT;
+--         ROLLBACK;
+--         SET p_success = FALSE;
+--     END;
+--     SET p_success = FALSE;
+--     SET p_error_message = NULL;
+--     SET p_time_slot_id = NULL;
+--     START TRANSACTION;
+--     SELECT COUNT(*) INTO v_doctor_exists FROM doctor WHERE doctor_id = p_doctor_id;
+--     IF v_doctor_exists = 0 THEN
+--         SET p_error_message = 'Doctor not found';
+--         ROLLBACK;
+--         LEAVE proc_label;
+--     END IF;
+--     SELECT COUNT(*) INTO v_branch_exists FROM branch WHERE branch_id = p_branch_id AND is_active = TRUE;
+--     IF v_branch_exists = 0 THEN
+--         SET p_error_message = 'Branch not found or inactive';
+--         ROLLBACK;
+--         LEAVE proc_label;
+--     END IF;
+--     IF p_available_date IS NULL THEN
+--         SET p_error_message = 'Available date is required';
+--         ROLLBACK;
+--         LEAVE proc_label;
+--     END IF;
+--     IF p_start_time IS NULL THEN
+--         SET p_error_message = 'Start time is required';
+--         ROLLBACK;
+--         LEAVE proc_label;
+--     END IF;
+--     IF p_end_time IS NULL THEN
+--         SET p_error_message = 'End time is required';
+--         ROLLBACK;
+--         LEAVE proc_label;
+--     END IF;
+--     IF p_end_time <= p_start_time THEN
+--         SET p_error_message = 'End time must be after start time';
+--         ROLLBACK;
+--         LEAVE proc_label;
+--     END IF;
+--     SET v_time_slot_id = UUID();
+--     INSERT INTO time_slot (
+--         time_slot_id, doctor_id, branch_id, available_date, 
+--         is_booked, start_time, end_time
+--     ) VALUES (
+--         v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
+--         FALSE, p_start_time, p_end_time
+--     );
+--     SET p_time_slot_id = v_time_slot_id;
+--     SET p_success = TRUE;
+--     SET p_error_message = 'Time slot added successfully';
+--     COMMIT;
+-- END proc_label//
+-- DELIMITER;
 
 
 --...................................................................................................................................
