@@ -10,63 +10,144 @@ from django.views.decorators.http import require_GET
 
 logger = logging.getLogger(__name__)
 
-@csrf_exempt
+@require_GET
 @jwt_required(allowed_roles=['Manager'])
 def get_doctor_performance_report(request):
-    # Step 1: Enforce GET method since we are only reading data
-    if request.method == 'GET':
-        try:
-            # Step 2: Open a secure database cursor
-            with connection.cursor() as cursor:
-                
-                # Step 3: Execute the analytical SQL query
-                cursor.execute("""
-                    SELECT 
-                        d.doctor_id,
-                        d.first_name,
-                        d.last_name,
-                        d.specialization,
-                        COUNT(a.appointment_id) AS total_appointments,
-                        SUM(CASE WHEN a.status = 'Completed' THEN 1 ELSE 0 END) AS completed_appointments,
-                        SUM(CASE WHEN a.status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_appointments
-                    FROM Doctor d
-                    LEFT JOIN Time_Slot ts ON d.doctor_id = ts.doctor_id
-                    LEFT JOIN Appointment a ON ts.time_slot_id = a.time_slot_id
-                    GROUP BY 
-                        d.doctor_id, 
-                        d.first_name, 
-                        d.last_name, 
-                        d.specialization
-                    ORDER BY completed_appointments DESC;
-                """)
-                
-                # Step 4: Fetch all aggregated rows
-                rows = cursor.fetchall()
 
-            # Step 5: Format the raw tuple data into a JSON-friendly list of dictionaries
-            performance_data = []
-            for row in rows:
-                performance_data.append({
-                    'doctor_id': row[0],
-                    'doctor_name': f"Dr. {row[1]} {row[2]}",
-                    'specialization': row[3],
-                    'total_appointments': row[4],
-                    # Convert Decimal/None types safely to integers
-                    'completed_appointments': int(row[5]) if row[5] else 0,
-                    'cancelled_appointments': int(row[6]) if row[6] else 0
-                })
+    try:
+        # Get manager's branch from the verified JWT
+        branch_id = getattr(request, 'branch_id', None)
 
-            # Step 6: Return the payload
+        if branch_id is None:
             return JsonResponse({
-                'status': 'success',
-                'doctor_count': len(performance_data),
-                'data': performance_data
-            }, status=200)
+                'status': 'error',
+                'message': 'Manager branch not found'
+            }, status=403)
 
-        except Exception as e:
-            return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
-            
-    return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    d.doctor_id,
+                    u.full_name,
+                    COALESCE(
+                        sp.specializations,
+                        'Not assigned'
+                    ) AS specialization,
+
+                    COALESCE(
+                        stats.total_appointments, 0
+                    ) AS total_appointments,
+
+                    COALESCE(
+                        stats.completed_appointments, 0
+                    ) AS completed_appointments,
+
+                    COALESCE(
+                        stats.cancelled_appointments, 0
+                    ) AS cancelled_appointments
+
+                FROM Doctor d
+
+                INNER JOIN Employee e
+                    ON d.employee_id = e.employee_id
+
+                INNER JOIN `User` u
+                    ON e.user_id = u.user_id
+
+                -- Aggregate specializations separately
+                LEFT JOIN (
+                    SELECT
+                        ds.doctor_id,
+                        GROUP_CONCAT(
+                            DISTINCT s.specialization_name
+                            ORDER BY s.specialization_name
+                            SEPARATOR ', '
+                        ) AS specializations
+
+                    FROM Doctor_Specialization ds
+
+                    INNER JOIN Specialization s
+                        ON ds.specialization_id =
+                           s.specialization_id
+
+                    GROUP BY ds.doctor_id
+                ) sp
+                    ON d.doctor_id = sp.doctor_id
+
+                -- Aggregate appointment counts separately
+                LEFT JOIN (
+                    SELECT
+                        ts.doctor_id,
+                        ts.branch_id,
+
+                        COUNT(a.appointment_id)
+                            AS total_appointments,
+
+                        SUM(
+                            CASE
+                                WHEN a.status = 'Completed'
+                                THEN 1
+                                ELSE 0
+                            END
+                        ) AS completed_appointments,
+
+                        SUM(
+                            CASE
+                                WHEN a.status = 'Cancelled'
+                                THEN 1
+                                ELSE 0
+                            END
+                        ) AS cancelled_appointments
+
+                    FROM Time_Slot ts
+
+                    LEFT JOIN Appointment a
+                        ON ts.time_slot_id = a.time_slot_id
+
+                    GROUP BY
+                        ts.doctor_id,
+                        ts.branch_id
+                ) stats
+                    ON d.doctor_id = stats.doctor_id
+                    AND stats.branch_id = e.branch_id
+
+                WHERE e.branch_id = %s
+
+                ORDER BY
+                    completed_appointments DESC,
+                    u.full_name ASC
+
+            """, [branch_id])
+
+            rows = cursor.fetchall()
+
+        performance_data = []
+
+        for row in rows:
+            performance_data.append({
+                'doctor_id': row[0],
+                'doctor_name': row[1],
+                'specialization': row[2],
+                'total_appointments': int(row[3]),
+                'completed_appointments': int(row[4]),
+                'cancelled_appointments': int(row[5])
+            })
+
+        return JsonResponse({
+            'status': 'success',
+            'doctor_count': len(performance_data),
+            'data': performance_data
+        }, status=200)
+
+    except Exception:
+        logger.exception(
+            'Failed to generate doctor performance report'
+        )
+
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Unable to generate report'
+        }, status=500)
 
 @csrf_exempt
 @jwt_required(allowed_roles=['Manager'])
@@ -183,30 +264,82 @@ def get_medication_usage_report(request):
                          "end_date": end_date, "results": results})
 
 
-@csrf_exempt
+
+@require_GET
 @jwt_required(allowed_roles=['Manager'])
 def get_revenue_report(request):
-    if request.method == 'GET':
-        try:
-            with connection.cursor() as cursor:
-                # Generates the Doctor-wise revenue report required by the clinic management[cite: 5]
-                cursor.execute("""
-                    SELECT d.doctor_id, d.first_name, d.last_name, SUM(i.total_amount) as total_revenue
-                    FROM Doctor d
-                    JOIN Appointment a ON d.doctor_id = a.doctor_id
-                    JOIN Invoice i ON a.appointment_id = i.appointment_id
-                    GROUP BY d.doctor_id, d.first_name, d.last_name
-                """)
-                rows = cursor.fetchall()
-                report_data = []
-                for row in rows:
-                    report_data.append({
-                        'doctor_id': row[0],
-                        'first_name': row[1],
-                        'last_name': row[2],
-                        'total_revenue': float(row[3]) if row[3] else 0.0
-                    })
-            return JsonResponse({'status': 'success', 'data': report_data}, status=200)
-        except Exception as e:
-            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
-    return JsonResponse({'status': 'error', 'message': 'Only GET method allowed'}, status=405)
+
+    try:
+        # Get the manager's branch from JWT
+        branch_id = getattr(request, 'branch_id', None)
+
+        if branch_id is None:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Manager branch not found'
+            }, status=403)
+
+        with connection.cursor() as cursor:
+
+            cursor.execute("""
+                SELECT
+                    d.doctor_id,
+                    u.full_name,
+
+                    COALESCE(
+                        SUM(i.sub_total), 0
+                    ) AS total_revenue
+
+                FROM Doctor d
+
+                INNER JOIN Employee e
+                    ON d.employee_id = e.employee_id
+
+                INNER JOIN `User` u
+                    ON e.user_id = u.user_id
+
+                LEFT JOIN Time_Slot ts
+                    ON d.doctor_id = ts.doctor_id
+                    AND ts.branch_id = e.branch_id
+
+                LEFT JOIN Appointment a
+                    ON ts.time_slot_id = a.time_slot_id
+                    AND a.status = 'Completed'
+
+                LEFT JOIN Invoice i
+                    ON a.appointment_id = i.appointment_id
+
+                WHERE e.branch_id = %s
+
+                GROUP BY
+                    d.doctor_id,
+                    u.full_name
+
+                ORDER BY total_revenue DESC
+
+            """, [branch_id])
+
+            rows = cursor.fetchall()
+
+        report_data = []
+
+        for row in rows:
+            report_data.append({
+                'doctor_id': row[0],
+                'doctor_name': row[1],
+                'total_revenue': format(row[2], '.2f')
+            })
+
+        return JsonResponse({
+            'status': 'success',
+            'doctor_count': len(report_data),
+            'data': report_data
+        }, status=200)
+
+    except Exception:
+        logger.exception('Failed to generate revenue report')
+
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Unable to generate revenue report'
+        }, status=500)
