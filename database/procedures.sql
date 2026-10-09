@@ -85,7 +85,7 @@ CREATE PROCEDURE CreateConsultationWithDetails(
     IN p_appointment_id INT,
     IN p_chief_complaint VARCHAR(255),
     IN p_symptoms TEXT,
-    IN p_diagnoses TEXT,
+    IN p_diagnosis TEXT,
     
     -- JSON Arrays sent from the frontend
     IN p_treatments JSON,       
@@ -141,8 +141,8 @@ proc_label: BEGIN
     END IF;
 
     -- 5. Insert Medical Record
-    INSERT INTO Medical_record (chief_complaint, symptoms, diagnoses)
-    VALUES (p_chief_complaint, p_symptoms, p_diagnoses);
+    INSERT INTO Medical_record (chief_complaint, symptoms, diagnosis)
+    VALUES (p_chief_complaint, p_symptoms, p_diagnosis);
     
     SET v_medical_record_id = LAST_INSERT_ID();
 
@@ -545,11 +545,11 @@ DELIMITER ;
 -- Procedure: Add timeslots to timslot table
 
 DELIMITER //
-DROP PROCEDURE IF EXISTS `AddTimeSlot`$$
+DROP PROCEDURE IF EXISTS `AddTimeSlot`//
 
 CREATE PROCEDURE `AddTimeSlot`(
-    IN p_doctor_id CHAR(36),
-    IN p_branch_id CHAR(36),
+    IN p_doctor_id INT,
+    IN p_branch_id INT,
     IN p_available_date DATE,
     IN p_start_time TIME,
     IN p_end_time TIME,
@@ -592,13 +592,14 @@ proc_label: BEGIN
         LEAVE proc_label;
     END IF;
    
-    -- Validation: Check if branch exists and is active
+    -- Validation: Check if branch exists
     SELECT COUNT(*) INTO v_branch_exists
-    FROM branch
-    WHERE branch_id = p_branch_id AND is_active = TRUE;
+    FROM Branch
+    WHERE branch_id = p_branch_id;
+    
    
     IF v_branch_exists = 0 THEN
-        SET p_error_message = 'Branch not found or inactive';
+        SET p_error_message = 'Branch not found';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
@@ -634,7 +635,7 @@ proc_label: BEGIN
         doctor_id, branch_id, available_date, 
         is_booked, start_time, end_time
     ) VALUES (
-        v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
+        p_doctor_id, p_branch_id, p_available_date, 
         FALSE, p_start_time, p_end_time
     );
    
@@ -645,7 +646,7 @@ proc_label: BEGIN
    
     COMMIT;
 END proc_label//
-DELIMITER;
+DELIMITER ;
 
 --...................................................................................................................................
 -- Procedure: CreateTimeSlot
