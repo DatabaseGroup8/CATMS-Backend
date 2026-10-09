@@ -11,6 +11,7 @@ from django.views.decorators.http import require_GET
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_doctor_performance_report(request):
     # Step 1: Enforce GET method since we are only reading data
     if request.method == 'GET':
@@ -68,6 +69,7 @@ def get_doctor_performance_report(request):
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_common_conditons_report(request):
     # Check that the request uses the GET Method
     if request == 'GET':
@@ -124,6 +126,7 @@ def get_common_conditons_report(request):
 
 @require_GET
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_medication_usage_report(request):
     """Count prescriptions and distinct patients per medication.
 
@@ -181,6 +184,7 @@ def get_medication_usage_report(request):
 
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_revenue_report(request):
     if request.method == 'GET':
         try:

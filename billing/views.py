@@ -15,6 +15,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
 def process_full_checkout(request):
     if request.method == 'POST':
         try:
@@ -64,6 +65,7 @@ def process_full_checkout(request):
 
 
 @require_GET
+@jwt_required(allowed_roles=['Receptionist'])
 def outstanding_balance(request, invoice_id=None):
     """GET an invoice balance using a URL argument or ?invoice_id=123.
 
