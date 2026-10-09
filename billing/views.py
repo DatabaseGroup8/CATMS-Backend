@@ -13,6 +13,7 @@ import json
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+from accounts.decorators import jwt_required
 
 @csrf_exempt
 def process_full_checkout(request):

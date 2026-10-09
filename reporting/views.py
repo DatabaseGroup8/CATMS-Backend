@@ -4,7 +4,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
 import logging
 from datetime import date
-
+from accounts.decorators import jwt_required
 from django.db import DatabaseError
 from django.views.decorators.http import require_GET
 

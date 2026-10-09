@@ -15,11 +15,13 @@ from django.db import connection
 from django.http import JsonResponse
 from django.db import connection, DatabaseError
 from django.views.decorators.http import require_GET
+from accounts.decorators import jwt_required
 
 logger = logging.getLogger(__name__)
 
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist', 'Doctor'])
 def search_patients(request):
     # Step 1: Enforce GET method since we are reading data
     if request.method == 'GET':
@@ -76,6 +78,7 @@ def search_patients(request):
 
 @csrf_exempt
 @require_POST
+@jwt_required(allowed_roles=['Receptionist'])
 def quick_register_patient(request):
     try:
         data = json.loads(request.body)
@@ -121,6 +124,7 @@ def quick_register_patient(request):
         return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist', 'Doctor'])
 def get_patient_appointments(request):
     # Check that the request uses the GET Method
     if request.method == 'GET':
@@ -215,6 +219,7 @@ def get_patient_appointments(request):
 
 @require_POST
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
 def create_time_slot(request):
     """POST JSON: doctor_id, branch_id, available_date, start_time, end_time.
 
@@ -275,6 +280,7 @@ def create_time_slot(request):
 
 @require_POST
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
 def book_appointment(request):
     """POST JSON: patient_id, time_slot_id, type (optional), and notes (optional).
 
@@ -347,6 +353,7 @@ def book_appointment(request):
     
 
 @require_GET
+@jwt_required(allowed_roles=['Receptionist', 'Doctor'])
 def get_daily_schedule(request):
     """
     Retrieves the doctor schedule (time slots) for a specific date and branch.
