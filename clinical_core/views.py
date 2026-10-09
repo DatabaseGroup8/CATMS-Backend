@@ -11,6 +11,7 @@ from django.views.decorators.http import require_POST
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Doctor'])
 def add_patient_condition(request):
     # Step 1: Enforce POST method since we are writing data
     if request.method == 'POST':
@@ -69,6 +70,7 @@ def add_patient_condition(request):
 
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Doctor'])
 def get_patient_history(request, patient_id):
     # Step 1: Enforce GET method since we are only reading data
     if request.method == 'GET':
@@ -124,7 +126,9 @@ def get_patient_history(request, patient_id):
 
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Doctor'])
 def get_consultation_summary(request):
+
     # Check that the request uses the GET method
     if request.method == 'GET':
         try:
@@ -204,6 +208,7 @@ def get_consultation_summary(request):
     }, status = 405)
 
 @require_POST
+@jwt_required(allowed_roles=['Doctor'])
 def create_consultation(request):
     """Accept JSON consultation details, treatments and prescriptions.
 
@@ -282,6 +287,7 @@ def create_consultation(request):
 
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
 @require_POST
 def add_medication(request):
     """Adds a new medication to the clinical dictionary."""
@@ -315,6 +321,7 @@ def add_medication(request):
 
 @csrf_exempt
 @require_POST
+@jwt_required(allowed_roles=['Receptionist'])
 def add_condition_category(request):
     """Adds a new condition category."""
     try:
@@ -339,6 +346,7 @@ def add_condition_category(request):
 
 @csrf_exempt
 @require_POST
+@jwt_required(allowed_roles=['Receptionist'])
 def add_condition(request):
     """Adds a specific medical condition under a category."""
     try:
@@ -367,6 +375,7 @@ def add_condition(request):
 
 @csrf_exempt
 @require_POST
+@jwt_required(allowed_roles=['Receptionist'])
 def add_treatment_category(request):
     """Adds a new category for treatments."""
     try:
@@ -394,6 +403,7 @@ def add_treatment_category(request):
 
 @csrf_exempt
 @require_POST
+@jwt_required(allowed_roles=['Receptionist'])
 def add_treatment_catalogue(request):
     """Adds a specific treatment service to the catalogue."""
     try:
@@ -423,3 +433,5 @@ def add_treatment_catalogue(request):
     except Exception as e:
         logger.exception("Error in add_treatment_catalogue")
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)            
+
+

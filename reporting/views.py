@@ -11,6 +11,7 @@ from django.views.decorators.http import require_GET
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_doctor_performance_report(request):
     # Step 1: Enforce GET method since we are only reading data
     if request.method == 'GET':
@@ -68,6 +69,7 @@ def get_doctor_performance_report(request):
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_common_conditons_report(request):
     # Check that the request uses the GET Method
     if request == 'GET':
@@ -124,6 +126,7 @@ def get_common_conditons_report(request):
 
 @require_GET
 @csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
 def get_medication_usage_report(request):
     """Count prescriptions and distinct patients per medication.
 
@@ -178,3 +181,32 @@ def get_medication_usage_report(request):
     # Include the applied date filters; an empty report returns an empty results list.
     return JsonResponse({"success": True, "start_date": start_date,
                          "end_date": end_date, "results": results})
+
+
+@csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
+def get_revenue_report(request):
+    if request.method == 'GET':
+        try:
+            with connection.cursor() as cursor:
+                # Generates the Doctor-wise revenue report required by the clinic management[cite: 5]
+                cursor.execute("""
+                    SELECT d.doctor_id, d.first_name, d.last_name, SUM(i.total_amount) as total_revenue
+                    FROM Doctor d
+                    JOIN Appointment a ON d.doctor_id = a.doctor_id
+                    JOIN Invoice i ON a.appointment_id = i.appointment_id
+                    GROUP BY d.doctor_id, d.first_name, d.last_name
+                """)
+                rows = cursor.fetchall()
+                report_data = []
+                for row in rows:
+                    report_data.append({
+                        'doctor_id': row[0],
+                        'first_name': row[1],
+                        'last_name': row[2],
+                        'total_revenue': float(row[3]) if row[3] else 0.0
+                    })
+            return JsonResponse({'status': 'success', 'data': report_data}, status=200)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    return JsonResponse({'status': 'error', 'message': 'Only GET method allowed'}, status=405)

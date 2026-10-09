@@ -16,6 +16,7 @@ from django.db import connection
 from accounts.decorators import jwt_required
 
 @csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
 def process_full_checkout(request):
     if request.method == 'POST':
         try:
@@ -65,6 +66,7 @@ def process_full_checkout(request):
 
 
 @require_GET
+@jwt_required(allowed_roles=['Receptionist'])
 def outstanding_balance(request, invoice_id=None):
     """GET an invoice balance using a URL argument or ?invoice_id=123.
 
@@ -101,3 +103,4 @@ def outstanding_balance(request, invoice_id=None):
         return JsonResponse({"success": False, "error": "Invoice not found."}, status=404)
     # JsonResponse encodes Decimal as a string, preserving monetary precision.
     return JsonResponse({"success": True, "invoice_id": row[0], "outstanding_balance": row[1]})
+
