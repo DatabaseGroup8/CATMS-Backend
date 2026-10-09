@@ -443,7 +443,7 @@ DELIMITER;
 -- Procedure: Record Payment
 DELIMITER //
 
-DROP PROCEDURE IF EXISTS `RecordPayment`$$
+DROP PROCEDURE IF EXISTS `RecordPayment`//
 CREATE PROCEDURE `RecordPayment`(
     IN p_invoice_id INT,
     IN p_user_id INT,
@@ -493,13 +493,13 @@ proc_label: BEGIN
     
     COMMIT;
 END proc_label//
-DELIMITER;
+DELIMITER ;
 
 --...................................................................................................................................
 -- Procedure: Process Insurance Claim
 DELIMITER //
 
-DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`$$
+DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`//
 CREATE PROCEDURE `ProcessInsuranceClaim`(
     IN p_invoice_id INT,
     IN p_insurance_id INT,
@@ -1379,9 +1379,9 @@ DELIMITER ;
 --...............................................................................................................................
 --Procedure : Register Employee
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS RegisterEmployee$$
+DROP PROCEDURE IF EXISTS RegisterEmployee//
 
 CREATE PROCEDURE RegisterEmployee(
     IN p_address_line_1 VARCHAR(150),
@@ -1520,16 +1520,16 @@ BEGIN
 
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
 
 --...............................................................................................................................
 --Procedure : Register Doctor
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS RegisterDoctor$$
+DROP PROCEDURE IF EXISTS RegisterDoctor//
 
 CREATE PROCEDURE RegisterDoctor(
     IN p_address_line_1 VARCHAR(150),
@@ -1704,16 +1704,16 @@ BEGIN
 
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
 
 --...............................................................................................................................
 --Procedure : Register Patient
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS RegisterPatient$$
+DROP PROCEDURE IF EXISTS RegisterPatient//
 
 CREATE PROCEDURE RegisterPatient(
     IN p_address_line_1 VARCHAR(150),
@@ -1842,16 +1842,16 @@ BEGIN
         END IF;
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
 
 --...............................................................................................................................
 --Procedure : Authenticate User
 
-DELIMITER $$
+DELIMITER //
 
-DROP PROCEDURE IF EXISTS AuthenticateUser$$
+DROP PROCEDURE IF EXISTS AuthenticateUser//
 
 CREATE PROCEDURE AuthenticateUser(
     IN p_email VARCHAR(150),
@@ -1901,6 +1901,6 @@ BEGIN
 
     END IF;
 
-END$$
+END//
 
 DELIMITER ;
