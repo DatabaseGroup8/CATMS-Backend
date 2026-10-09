@@ -9,7 +9,12 @@ from django.db import DatabaseError
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.db import connection
+
 logger = logging.getLogger(__name__)
+
 
 @csrf_exempt
 def search_patients(request):
@@ -24,22 +29,20 @@ def search_patients(request):
                 # Add SQL wildcards (%) to find partial matches anywhere in the string
                 search_pattern = f"%{search_query}%"
                 
-                # Step 2: Execute raw SQL with the LIKE operator
+                # Step 2: Execute raw SQL with the LIKE operator using your exact schema
                 cursor.execute("""
                     SELECT 
                         patient_id, 
-                        first_name, 
-                        last_name, 
-                        date_of_birth, 
-                        CalculateAge(date_of_birth) AS age,
-                        contact_number
+                        full_name, 
+                        DOB, 
+                        CalculateAge(DOB) AS age,
+                        contact_no
                     FROM Patient
-                    WHERE first_name LIKE %s 
-                       OR last_name LIKE %s 
-                       OR contact_number LIKE %s
-                    ORDER BY first_name ASC
+                    WHERE full_name LIKE %s 
+                       OR contact_no LIKE %s
+                    ORDER BY full_name ASC
                     LIMIT 50;
-                """, [search_pattern, search_pattern, search_pattern])
+                """, [search_pattern, search_pattern])
                 
                 # Step 3: Fetch all matching rows
                 rows = cursor.fetchall()
@@ -49,12 +52,11 @@ def search_patients(request):
             for row in rows:
                 patients_list.append({
                     'patient_id': row[0],
-                    'first_name': row[1],
-                    'last_name': row[2],
-                    # Convert date object to a standard string format
-                    'date_of_birth': row[3].strftime('%Y-%m-%d') if row[3] else None,
-                    'age': row[4],
-                    'contact_number': row[4]
+                    'full_name': row[1],
+                    # Convert date object to a standard string format securely
+                    'DOB': row[2].strftime('%Y-%m-%d') if row[2] else None,
+                    'age': row[3],
+                    'contact_no': row[4]
                 })
 
             # Step 5: Return the payload
@@ -68,6 +70,59 @@ def search_patients(request):
             return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
+
+@csrf_exempt
+@require_POST
+def quick_register_patient(request):
+    try:
+        # Step 1: Parse the incoming JSON data
+        data = json.loads(request.body)
+        
+        # Step 2: Extract and sanitize minimal required fields
+        first_name = data.get('first_name', '').strip()
+        last_name = data.get('last_name', '').strip()
+        contact_number = data.get('contact_number', '').strip()
+        date_of_birth = data.get('date_of_birth') # Expected format: 'YYYY-MM-DD'
+        nic = data.get('nic', '').strip() # Optional, depending on your exact schema
+        
+        # Basic validation to ensure we don't create blank records
+        if not first_name or not last_name:
+            return JsonResponse({
+                'status': 'error', 
+                'message': 'First name and last name are strictly required.'
+            }, status=400)
+            
+        with connection.cursor() as cursor:
+            # Step 3: Insert the new patient into the database
+            # Adjust the column names below if your Patient table has different mandatory fields
+            cursor.execute("""
+                INSERT INTO Patient (first_name, last_name, date_of_birth, contact_number, nic)
+                VALUES (%s, %s, %s, %s, %s)
+            """, [first_name, last_name, date_of_birth, contact_number, nic])
+            
+            # Step 4: Grab the ID of the row we just inserted
+            cursor.execute("SELECT LAST_INSERT_ID();")
+            new_patient_id = cursor.fetchone()[0]
+            
+        # Step 5: Return the newly created patient data in a format the frontend expects
+        # so it can immediately auto-select this patient for the appointment
+        return JsonResponse({
+            'status': 'success',
+            'message': 'Patient registered successfully.',
+            'data': {
+                'patient_id': new_patient_id,
+                'first_name': first_name,
+                'last_name': last_name,
+                'contact_number': contact_number,
+                'date_of_birth': date_of_birth
+            }
+        }, status=201)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON format sent to server.'}, status=400)
+    except Exception as e:
+        # Catch database constraints (like duplicate NICs) or missing columns
+        return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
 
 @csrf_exempt
 def get_patient_appointments(request):
@@ -225,45 +280,70 @@ def create_time_slot(request):
 @require_POST
 @csrf_exempt
 def book_appointment(request):
-    """POST JSON: patient_id, time_slot_id and optional notes.
+    """POST JSON: patient_id, time_slot_id, type (optional), and notes (optional).
 
-    Requires BookAppointment in MySQL, which locks the slot during booking.
+    Requires BookAppointment in MySQL, which locks the daily slot during booking
+    and dynamically generates an incrementing queue token.
     """
     # Reject malformed JSON and invalid fields before calling the database.
     try:
         data = json.loads(request.body)
         if not isinstance(data, dict):
             raise ValueError("The request body must be a JSON object.")
+            
         for field in ("patient_id", "time_slot_id"):
             if type(data.get(field)) is not int or data[field] <= 0:
                 raise ValueError(f"{field} must be a positive integer.")
+                
         notes = data.get("notes", "")
         if not isinstance(notes, str):
             raise ValueError("notes must be a string.")
+            
+        # Extract the appointment type, defaulting to 'General' if omitted
+        appointment_type = data.get("type", "General")
+        if not isinstance(appointment_type, str):
+            raise ValueError("type must be a string.")
+            
     except (ValueError, UnicodeDecodeError) as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=400)
 
     try:
         with connection.cursor() as cursor:
-            # Reset connection-scoped variables that receive the procedure outputs.
-            cursor.execute("SET @appointment_id = NULL, @booking_message = NULL, @booking_success = 0")
-            # Bind request values as parameters; the procedure manages its transaction.
+            # Initialize MySQL session variables, including the new @appointment_number
             cursor.execute(
-                "CALL BookAppointment(%s, %s, %s, @appointment_id, @booking_message, @booking_success)",
-                [data["patient_id"], data["time_slot_id"], notes],
+                "SET @appointment_id = NULL, @appointment_number = NULL, "
+                "@booking_message = NULL, @booking_success = 0"
             )
-            # Consume CALL result sets before selecting its OUT parameters.
+            
+            # Call the stored procedure with the newly required 'type' parameter
+            cursor.execute(
+                "CALL BookAppointment(%s, %s, %s, %s, @appointment_id, @appointment_number, @booking_message, @booking_success)",
+                [data["patient_id"], data["time_slot_id"], appointment_type, notes],
+            )
+            
+            # Consume CALL result sets to prevent "Commands out of sync" errors
             while cursor.nextset():
                 pass
-            cursor.execute("SELECT @appointment_id, @booking_message, @booking_success")
-            appointment_id, message, success = cursor.fetchone()
+                
+            # Fetch the generated IDs and status flags back into Python
+            cursor.execute("SELECT @appointment_id, @appointment_number, @booking_message, @booking_success")
+            appointment_id, appointment_number, message, success = cursor.fetchone()
+            
     # Keep database diagnostics in server logs and return a generic error.
     except DatabaseError:
         logger.exception("Failed to book appointment")
         return JsonResponse({"success": False, "error": "Unable to book appointment."}, status=500)
-    # Handle failures returned by the procedure, even when CALL itself succeeds.
+        
+    # Handle logical failures returned by the procedure (e.g., patient not found)
     if not success:
         logger.warning("BookAppointment failed: %s", message)
-        return JsonResponse({"success": False, "error": "Appointment could not be booked. Check the patient and slot availability."}, status=400)
-    # Return the new record ID with HTTP 201 (Created).
-    return JsonResponse({"success": True, "appointment_id": appointment_id}, status=201)
+        # Use the specific message generated by the SQL procedure if available
+        error_msg = message if message else "Appointment could not be booked. Check availability."
+        return JsonResponse({"success": False, "error": error_msg}, status=400)
+        
+    # Return both the database ID and the critical queue token to the frontend
+    return JsonResponse({
+        "success": True, 
+        "appointment_id": appointment_id,
+        "token_number": appointment_number
+    }, status=201)
