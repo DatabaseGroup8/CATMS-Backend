@@ -338,25 +338,25 @@ def create_time_slot(request):
         employee_id = int(request.employee_id)
     except (ValueError, KeyError, TypeError, UnicodeDecodeError):
         return JsonResponse({'success': False,
-                             'error': 'Invalid slot data'}, status=400)
+            'error': 'Invalid slot data'}, status=400)
     try:
         with connection.cursor() as cursor:
             cursor.execute('''
                 SELECT 1 FROM Employee
                 WHERE employee_id=%s AND branch_id=%s
-                  AND role='Receptionist' AND status='Active'
+                AND role='Receptionist' AND status='Active'
             ''', [employee_id, branch_id])
             if cursor.fetchone() is None:
                 return JsonResponse({'success': False,
-                                     'error': 'Access denied'}, status=403)
+                    'error': 'Access denied'}, status=403)
             cursor.execute('''
                 SET @slot_id=NULL, @slot_message=NULL,
-                    @slot_success=0
+                @slot_success=0
             ''')
             cursor.execute('''
                 CALL AddTimeSlot(
-                  %s,%s,%s,%s,%s,%s,
-                  @slot_id,@slot_message,@slot_success
+                %s,%s,%s,%s,%s,%s,
+                @slot_id,@slot_message,@slot_success
                 )
             ''', [doctor_id, branch_id, slot_date,
                   start, end, available])
@@ -365,21 +365,15 @@ def create_time_slot(request):
             cursor.execute('SELECT @slot_id,@slot_message,@slot_success')
             slot_id, message, success = cursor.fetchone()
         if not success:
-            logger.warning('AddTimeSlot rejected: %s', message)
             return JsonResponse({'success': False,
-                                 'error': (message if message in {
-                                     'Invalid slot details',
-                                     'Doctor not active in branch',
-                                     'Overlapping doctor time slot'
-                                 } else 'Unable to create time slot')}, status=409)
+                    'error': message or 'Slot rejected'}, status=409)
         return JsonResponse({'success': True,
-                             'time_slot_id': slot_id,
-                             'available': available}, status=201)
+                    'time_slot_id': slot_id,
+                    'available': available}, status=201)
     except DatabaseError:
         logger.exception('Create slot failed')
         return JsonResponse({'success': False,
-                             'error': 'Database error'}, status=500)
-
+            'error': 'Database error'}, status=500)
 
 @require_POST
 @csrf_exempt
