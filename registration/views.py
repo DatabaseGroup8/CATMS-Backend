@@ -420,8 +420,8 @@ def book_appointment(request):
             
             # Call the stored procedure with the newly required 'type' parameter
             cursor.execute(
-                "CALL BookAppointment(%s, %s, %s, %s, @appointment_id, @appointment_number, @booking_message, @booking_success)",
-                [data["patient_id"], data["time_slot_id"], appointment_type, notes],
+                "CALL BookAppointment(%s, %s, %s, %s, %s, @appointment_id, @appointment_number, @booking_message, @booking_success)",
+                [data["patient_id"], data["time_slot_id"], appointment_type, notes, request.employee_id],
             )
             
             # Consume CALL result sets to prevent "Commands out of sync" errors
@@ -474,7 +474,7 @@ def get_daily_schedule(request):
                 SELECT ts.time_slot_id, u.full_name,
                        COALESCE(spec.specializations, 'Not assigned'),
                        ts.available_date, ts.start_time, ts.end_time,
-                       COALESCE(booked.current_patients, 0), ts.is_booked
+                       COALESCE(booked.current_patients, 0), ts.availabe
                 FROM Time_Slot ts
                 JOIN Doctor d ON d.doctor_id = ts.doctor_id
                 JOIN Employee e ON e.employee_id = d.employee_id
@@ -511,10 +511,15 @@ def get_daily_schedule(request):
     for r in rows:
         # No capacity field exists, so don't report Fully Booked based on an invented limit.
         data.append({
-            'time_slot_id': r[0], 'doctor_name': r[1], 'specialty': r[2],
-            'date': str(r[3]), 'start_time': str(r[4]), 'end_time': str(r[5]),
-            'current_patients': r[6], 'max_patients': None,
-            'status': 'Closed' if r[7] else 'Open',
-        })
+                        'time_slot_id': r[0],
+                        'doctor_name': r[1],
+                        'specialty': r[2],
+                        'date': str(r[3]),
+                        'start_time': str(r[4]),
+                        'end_time': str(r[5]),
+                        'booked_count': r[6],
+                        'available': bool(r[7]),
+                        'status': 'Open' if r[7] else 'Closed'
+                    })
     return JsonResponse({'status':'success','date':str(selected_date),
                          'branch_id':branch_id, 'count':len(data), 'data': data})
