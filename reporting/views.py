@@ -294,3 +294,136 @@ def treatments_by_category(request):
     except DatabaseError:
         logger.exception('Treatment categories report failed')
         return _error('Unable to retrieve treatment report', 500)
+    
+@jwt_required(allowed_roles=['Manager'])
+@require_GET
+def insurance_vs_out_of_pocket(request):
+    """Report 5: Allocated insurance vs actual insurer/patient cash (invoice cohort).
+
+    Uses latest claim/settlement state, so cash-to-date may be after the period.
+    Insurance allocated is *not* treated as received cash.
+    """
+    try:
+        start, end = _period(request)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
+        branch_id = _manager_branch(request)
+        if branch_id is None:
+            return _error('Manager branch access denied', 403)
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(i.Invoice_id) AS invoice_count,
+                       COALESCE(SUM(COALESCE(i.sub_total,0)),0) AS billed,
+                       COALESCE(SUM(COALESCE(i.insurance_claimed_amount,0)),0)
+                           AS insurance_allocated,
+                       COALESCE(SUM(COALESCE(pay.paid,0)),0) AS patient_paid,
+                       COALESCE(SUM(COALESCE(cl.insurer_paid,0)),0) AS insurer_received,
+                       COALESCE(SUM(GREATEST(
+                           COALESCE(i.sub_total,0)-COALESCE(i.insurance_claimed_amount,0)
+                           -COALESCE(pay.paid,0),0)),0) AS patient_outstanding,
+                       COALESCE(SUM(GREATEST(
+                           COALESCE(i.insurance_claimed_amount,0)
+                           -COALESCE(cl.insurer_paid,0),0)),0) AS insurance_unreceived
+                FROM Invoice i
+                JOIN Appointment a ON a.appointment_id=i.appointment_id
+                JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+                LEFT JOIN (
+                    SELECT Invoice_id,
+                           SUM(CASE WHEN status='Completed'
+                               THEN COALESCE(payment_amount,0) ELSE 0 END) AS paid
+                    FROM Payment GROUP BY Invoice_id
+                ) pay ON pay.Invoice_id=i.Invoice_id
+                LEFT JOIN (
+                    SELECT invoice_id,
+                           SUM(COALESCE(insurance_paid_amount,0)) AS insurer_paid
+                    FROM Claims GROUP BY invoice_id
+                ) cl ON cl.invoice_id=i.Invoice_id
+                WHERE ts.branch_id=%s AND i.created_at BETWEEN %s AND %s
+            """, [branch_id, start, end])
+            r = cursor.fetchone()
+        billed = Decimal(r[1] or 0)
+        allocated = Decimal(r[2] or 0)
+        patient_paid = Decimal(r[3] or 0)
+        insurer_received = Decimal(r[4] or 0)
+        patient_outstanding = Decimal(r[5] or 0)
+        insurance_unreceived = Decimal(r[6] or 0)
+        return JsonResponse({
+            'status': 'success', 'branch_id': branch_id,
+            'start_date': start.isoformat(), 'end_date': end.isoformat(),
+            'period_basis': 'invoice_created_at',
+            'payment_basis': 'all_payments_and_insurer_settlements_to_date_for_selected_invoices',
+            'data': {
+                'invoice_count': int(r[0] or 0),
+                'invoiced_total': _money(billed),
+                'insurance_allocated': _money(allocated),
+                'patient_responsibility': _money(billed-allocated),
+                'patient_paid': _money(patient_paid),
+                'insurance_received': _money(insurer_received),
+                'patient_outstanding': _money(patient_outstanding),
+                'insurance_allocated_but_not_received': _money(insurance_unreceived),
+                'total_cash_received': _money(patient_paid+insurer_received),
+            },
+        })
+    except DatabaseError:
+        logger.exception('Insurance versus out-of-pocket report failed')
+        return _error('Unable to retrieve insurance financial report', 500)
+
+
+@jwt_required(allowed_roles=['Manager'])
+@require_GET
+def medication_usage_branch_scoped(request):
+    """Original report interface, but restricted to the manager's branch.
+
+    Preserves optional (open-ended) date filters and success/results keys.
+    """
+    try:
+        start = _date_param(request, 'start_date') if request.GET.get('start_date') is not None else None
+        end = _date_param(request, 'end_date') if request.GET.get('end_date') is not None else None
+        if start is not None and end is not None and start > end:
+            raise ValueError('start_date must be on or before end_date')
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+    try:
+        branch_id = _manager_branch(request)
+        if branch_id is None:
+            return _error('Manager branch access denied', 403)
+        conditions = ['ts.branch_id=%s', "a.status='Completed'"]
+        params = [branch_id]
+        if start is not None:
+            conditions.append('ts.available_date >= %s')
+            params.append(start)
+        if end is not None:
+            conditions.append('ts.available_date <= %s')
+            params.append(end)
+        # Only hard-coded SQL fragments are inserted. Dates remain parameters.
+        sql = """
+            SELECT m.medication_id, m.generic_name, m.form, m.manufacturer,
+                   COUNT(p.prescription_id) AS prescription_count,
+                   COUNT(DISTINCT a.patient_id) AS patient_count
+            FROM Prescription p
+            JOIN Medication m ON m.medication_id=p.medication_id
+            JOIN consultation_record cr
+                ON cr.medical_record_id=p.medical_record_id
+            JOIN Appointment a ON a.appointment_id=cr.appointment_id
+            JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+            WHERE """ + ' AND '.join(conditions) + """
+            GROUP BY m.medication_id,m.generic_name,m.form,m.manufacturer
+            ORDER BY prescription_count DESC,m.generic_name
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+        return JsonResponse({
+            'success': True,
+            'start_date': start.isoformat() if start else None,
+            'end_date': end.isoformat() if end else None,
+            'results': [{
+                'medication_id': r[0], 'generic_name': r[1],
+                'form': r[2], 'manufacturer': r[3],
+                'prescription_count': int(r[4]), 'patient_count': int(r[5]),
+            } for r in rows],
+        })
+    except DatabaseError:
+        logger.exception('Branch medication usage report failed')
+        return JsonResponse({'success': False, 'error': 'Unable to retrieve medication usage'}, status=500)
