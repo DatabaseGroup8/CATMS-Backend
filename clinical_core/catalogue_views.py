@@ -103,4 +103,67 @@ def assign_doctor_specialization(request, doctor_id):
         logger.exception('Specialization assignment failed')
         return JsonResponse({'status': 'error',
                              'message': 'Unable to assign'}, status=500)
-                             
+
+
+
+
+@csrf_exempt
+@jwt_required(allowed_roles=['Manager'])
+@require_POST
+def create_specialization(request):
+    try:
+        body = json.loads(request.body)
+        if not isinstance(body, dict):
+            raise ValueError('JSON object required')
+
+        name = body.get('specialization_name')
+        description = body.get('description', '')
+
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError('Name required')
+
+        if len(name.strip()) > 100 or not isinstance(description, str):
+            raise ValueError('Invalid name or description')
+
+    except (ValueError, TypeError, AttributeError):
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Invalid request'
+        }, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT 1
+                FROM Employee
+                WHERE employee_id = %s
+                  AND branch_id = %s
+                  AND role = 'Manager'
+                  AND status = 'Active'
+            """, [request.employee_id, request.branch_id])
+
+            if cursor.fetchone() is None:
+                return JsonResponse({
+                    'status': 'error',
+                    'message': 'Access denied'
+                }, status=403)
+
+            cursor.execute("""
+                INSERT INTO Specialization
+                    (specialization_name, description)
+                VALUES (%s, %s)
+            """, [name.strip(), description.strip()])
+
+            new_id = cursor.lastrowid
+
+        return JsonResponse({
+            'status': 'success',
+            'specialization_id': new_id
+        }, status=201)
+
+    except DatabaseError:
+        logger.exception('Create specialization failed')
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Unable to create'
+        }, status=500)

@@ -45,4 +45,11 @@ urlpatterns += [
     path('treatments/categories/',catalogue_views.list_treatment_categories,name='list_treatment_categories'),
     path('specializations/',catalogue_views.list_specializations,name='list_specializations'),
     path('doctors/<int:doctor_id>/specializations/',catalogue_views.assign_doctor_specialization,name='assign_doctor_specialization'),
+
+    # POST: /api/clinical/specializations/add/
+    path(
+    'specializations/add/',
+    catalogue_views.create_specialization,
+    name='create_specialization'
+        ),
 ]

@@ -1,6 +1,7 @@
 # registration/urls.py
 from django.urls import path
 from . import views
+from . import directory_views
 
 urlpatterns = [
     path('search/', views.search_patients, name='search_patients'),
@@ -40,4 +41,15 @@ urlpatterns = [
         name='update_time_slot_availability'
         ),
 
+    path(
+    'doctors/',
+    directory_views.list_doctors,
+    name='list_doctors'
+        ),
+
+    path(
+    'patients/<int:patient_id>/',
+    directory_views.get_patient_details,
+    name='get_patient_details'
+        ),
 ]
