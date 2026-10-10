@@ -41,14 +41,20 @@ BEGIN
 END$$
 
 -- This only reflects the legacy is_booked flag; no slot capacity in current schema.
-CREATE FUNCTION IsDoctorAvailable(p_doctor_id INT,p_date DATE,p_time TIME) RETURNS BOOLEAN
+CREATE FUNCTION IsDoctorAvailable(
+    p_doctor_id INT, p_date DATE, p_time TIME
+) RETURNS BOOLEAN
 READS SQL DATA
 BEGIN
     DECLARE v_count INT DEFAULT 0;
-    SELECT COUNT(*) INTO v_count FROM Time_Slot
-    WHERE doctor_id=p_doctor_id AND available_date=p_date
-      AND start_time<=p_time AND end_time>p_time AND is_booked=FALSE;
-    RETURN v_count>0;
+    SELECT COUNT(*) INTO v_count
+    FROM Time_Slot
+    WHERE doctor_id = p_doctor_id
+      AND available_date = p_date
+      AND start_time <= p_time
+      AND end_time > p_time
+      AND available = TRUE;
+    RETURN v_count > 0;
 END$$
 
 CREATE FUNCTION IsInsuranceActive(p_insurance_id INT) RETURNS BOOLEAN
