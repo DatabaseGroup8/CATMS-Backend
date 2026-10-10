@@ -34,4 +34,10 @@ urlpatterns = [
         name='get_daily_schedule'
     ),
 
+    path(
+        'time-slots/<int:slot_id>/availability/',
+        views.update_time_slot_availability,
+        name='update_time_slot_availability'
+        ),
+
 ]

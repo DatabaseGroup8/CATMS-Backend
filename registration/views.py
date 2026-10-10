@@ -16,6 +16,8 @@ from django.http import JsonResponse
 from django.db import connection, DatabaseError
 from django.views.decorators.http import require_GET
 from accounts.decorators import jwt_required
+from django.db import transaction
+from django.views.decorators.http import require_http_methods
 
 logger = logging.getLogger(__name__)
 
@@ -523,3 +525,61 @@ def get_daily_schedule(request):
                     })
     return JsonResponse({'status':'success','date':str(selected_date),
                          'branch_id':branch_id, 'count':len(data), 'data': data})
+
+@csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
+@require_http_methods(['PATCH'])
+def update_time_slot_availability(request, slot_id):
+    try:
+        body = json.loads(request.body)
+        if not isinstance(body, dict):
+            raise ValueError('JSON object required')
+        available = body.get('available')
+        if type(available) is not bool:
+            raise ValueError('available must be boolean')
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+
+    except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
+        return JsonResponse({'success': False,
+                             'error': 'Invalid request'}, status=400)
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute('''
+                    SELECT 1 FROM Employee
+                    WHERE employee_id=%s AND branch_id=%s
+                      AND role='Receptionist' AND status='Active'
+                ''', [employee_id, branch_id])
+                if cursor.fetchone() is None:
+                    return JsonResponse({'success': False,
+                                         'error': 'Access denied'}, status=403)
+                cursor.execute('''
+                    SELECT available,available_date FROM Time_Slot
+                    WHERE time_slot_id=%s AND branch_id=%s FOR UPDATE
+                ''', [slot_id, branch_id])
+                slot = cursor.fetchone()
+                if slot is None:
+                    return JsonResponse({'success': False,
+                                         'error': 'Slot not found'}, status=404)
+                if slot[1] < timezone.localdate():
+                    return JsonResponse({'success': False,
+                                         'error': 'Cannot edit past slot'}, status=400)
+                if bool(slot[0]) != available:
+                    cursor.execute('''
+                        UPDATE Time_Slot SET available=%s
+                        WHERE time_slot_id=%s
+                    ''', [available, slot_id])
+                cursor.execute('''
+                    SELECT COUNT(*) FROM Appointment
+                    WHERE time_slot_id=%s AND status='Scheduled'
+                ''', [slot_id])
+                booked = cursor.fetchone()[0]
+        return JsonResponse({'success': True,
+                             'time_slot_id': slot_id,
+                             'available': available,
+                             'scheduled_appointments': booked})
+    except DatabaseError:
+        logger.exception('Update slot availability failed')
+        return JsonResponse({'success': False,
+                             'error': 'Database error'}, status=500)
