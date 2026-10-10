@@ -73,6 +73,7 @@ proc_label: BEGIN
     SET p_error_message = 'Slot created';
 END$$
 
+
 CREATE PROCEDURE GetStaffByBranch(
     IN p_branch_name VARCHAR(100), IN p_role VARCHAR(50),
     IN p_active_only BOOLEAN, IN p_limit INT, IN p_offset INT
@@ -283,6 +284,7 @@ proc_label: BEGIN
     WHERE ts.time_slot_id = p_time_slot_id
       AND e.branch_id = ts.branch_id
       AND e.role = 'Doctor' AND e.status = 'Active';
+      
     IF v_active_doctor = 0 THEN
         SET p_error_message = 'Doctor inactive';
         ROLLBACK;

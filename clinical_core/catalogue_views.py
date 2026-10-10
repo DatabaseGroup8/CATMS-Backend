@@ -5,7 +5,9 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 from accounts.decorators import jwt_required
+
 logger = logging.getLogger(__name__)
+
 def _catalogue(sql, params=None):
     try:
         with connection.cursor() as cursor:
@@ -18,6 +20,7 @@ def _catalogue(sql, params=None):
         logger.exception('Catalogue read failed')
         return JsonResponse({'status': 'error',
                              'message': 'Unable to load catalogue'}, status=500)
+        
 @jwt_required(allowed_roles=['Receptionist', 'Doctor', 'Manager'])
 @require_GET
 def list_condition_categories(request):
@@ -25,6 +28,7 @@ def list_condition_categories(request):
         SELECT condition_category_id, category_name
         FROM Condition_category ORDER BY category_name
     ''')
+    
 @jwt_required(allowed_roles=['Receptionist', 'Doctor', 'Manager'])
 @require_GET
 def list_conditions(request):
@@ -41,6 +45,7 @@ def list_conditions(request):
         WHERE c.condition_name LIKE %s
         ORDER BY c.condition_name LIMIT 100
     ''', [f'%{q}%'])
+
 @jwt_required(allowed_roles=['Receptionist', 'Manager'])
 @require_GET
 def list_treatment_categories(request):
@@ -48,6 +53,7 @@ def list_treatment_categories(request):
             SELECT treatment_category_id, category_name, description
         FROM Treatment_Category ORDER BY category_name
     ''')
+
 @jwt_required(allowed_roles=['Receptionist', 'Doctor', 'Manager'])
 @require_GET
 def list_specializations(request):

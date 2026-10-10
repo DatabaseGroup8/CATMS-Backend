@@ -476,7 +476,7 @@ def get_daily_schedule(request):
                 SELECT ts.time_slot_id, u.full_name,
                        COALESCE(spec.specializations, 'Not assigned'),
                        ts.available_date, ts.start_time, ts.end_time,
-                       COALESCE(booked.current_patients, 0), ts.availabe
+                       COALESCE(booked.current_patients, 0), ts.available
                 FROM Time_Slot ts
                 JOIN Doctor d ON d.doctor_id = ts.doctor_id
                 JOIN Employee e ON e.employee_id = d.employee_id
