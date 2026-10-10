@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
 from django.db import DatabaseError
 from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET
 from accounts.decorators import jwt_required
 
 logger = logging.getLogger(__name__)
