@@ -203,6 +203,7 @@ CREATE PROCEDURE `BookAppointment`(
     IN p_patient_id INT,
     IN p_time_slot_id INT,
     IN p_type VARCHAR(50),       -- e.g., 'Consultation', 'Follow-up'
+    IN p_receptionist_id INT
     IN p_notes TEXT,
     
     -- OUTPUT PARAMETERS: Data sent back to the Django backend
@@ -216,6 +217,10 @@ proc_label: BEGIN
     DECLARE v_patient_exists INT DEFAULT 0;
     DECLARE v_slot_date DATE;
     DECLARE v_next_number INT DEFAULT 1;
+    DECLARE v_slot_available BOOLEAN DEFAULT NULL;
+    DECLARE v_slot_branch INT DEFAULT NULL;
+    DECLARE v_authorized INT DEFAULT 0;
+    DECLARE v_active_doctor INT DEFAULT 0;
     
     -- ERROR HANDLER: If any SQL error occurs, rollback all changes and exit safely
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
@@ -248,13 +253,44 @@ proc_label: BEGIN
     -- 2. Validate Slot & Lock for Concurrency: 
     -- 'FOR UPDATE' locks this specific daily time slot row for this transaction.
     -- This prevents two receptionists from calculating the MAX() token at the exact same millisecond.
-    SELECT available_date INTO v_slot_date
-    FROM Time_Slot 
-    WHERE time_slot_id = p_time_slot_id
+    SELECT ts.available_date, ts.available, ts.branch_id
+    INTO v_slot_date, v_slot_available, v_slot_branch
+    FROM Time_Slot ts
+    WHERE ts.time_slot_id = p_time_slot_id
     FOR UPDATE;
     
     IF v_slot_date IS NULL THEN
         SET p_error_message = 'Time slot not found';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    SELECT COUNT(*) INTO v_authorized
+    FROM Employee e
+    WHERE e.employee_id = p_receptionist_id
+      AND e.branch_id = v_slot_branch
+      AND e.role = 'Receptionist' AND e.status = 'Active';
+    IF v_authorized = 0 THEN
+        SET p_error_message = 'Unauthorized receptionist';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    SELECT COUNT(*) INTO v_active_doctor
+    FROM Time_Slot ts
+    JOIN Doctor d ON d.doctor_id = ts.doctor_id
+    JOIN Employee e ON e.employee_id = d.employee_id
+    WHERE ts.time_slot_id = p_time_slot_id
+      AND e.branch_id = ts.branch_id
+      AND e.role = 'Doctor' AND e.status = 'Active';
+    IF v_active_doctor = 0 THEN
+        SET p_error_message = 'Doctor inactive';
+        ROLLBACK;
+        LEAVE proc_label;
+    END IF;
+
+    IF v_slot_available IS NULL OR v_slot_available = FALSE THEN
+        SET p_error_message = 'Time slot is unavailable';
         ROLLBACK;
         LEAVE proc_label;
     END IF;
