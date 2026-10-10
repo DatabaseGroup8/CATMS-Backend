@@ -112,3 +112,84 @@ def branch_daily_appointments(request):
     except DatabaseError:
         logger.exception('Branch-wise appointments report failed')
         return _error('Unable to retrieve appointment report', 500)
+
+
+@jwt_required(allowed_roles=['Manager'])
+@require_GET
+def doctor_revenue(request):
+    """Report 2: Invoice-cohort billed and collected amounts, doctor-wise."""
+    try:
+        start, end = _period(request)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
+        branch_id = _manager_branch(request)
+        if branch_id is None:
+            return _error('Manager branch access denied', 403)
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT d.doctor_id, u.full_name,
+                       COALESCE(fin.invoice_count, 0),
+                       COALESCE(fin.invoiced, 0),
+                       COALESCE(fin.patient_paid, 0),
+                       COALESCE(fin.insurance_allocated, 0),
+                       COALESCE(fin.insurer_received, 0),
+                       COALESCE(fin.patient_outstanding, 0)
+                FROM Doctor d
+                JOIN Employee e ON e.employee_id=d.employee_id
+                JOIN `User` u ON u.user_id=e.user_id
+                LEFT JOIN (
+                    SELECT ts.doctor_id,
+                           COUNT(i.Invoice_id) AS invoice_count,
+                           SUM(COALESCE(i.sub_total,0)) AS invoiced,
+                           SUM(COALESCE(pay.paid,0)) AS patient_paid,
+                           SUM(COALESCE(i.insurance_claimed_amount,0)) AS insurance_allocated,
+                           SUM(COALESCE(cl.insurer_paid,0)) AS insurer_received,
+                           SUM(GREATEST(
+                               COALESCE(i.sub_total,0)
+                               -COALESCE(i.insurance_claimed_amount,0)
+                               -COALESCE(pay.paid,0),0
+                           )) AS patient_outstanding
+                    FROM Invoice i
+                    JOIN Appointment a ON a.appointment_id=i.appointment_id
+                    JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+                    LEFT JOIN (
+                        SELECT Invoice_id,
+                               SUM(CASE WHEN status='Completed'
+                                   THEN COALESCE(payment_amount,0) ELSE 0 END) AS paid
+                        FROM Payment GROUP BY Invoice_id
+                    ) pay ON pay.Invoice_id=i.Invoice_id
+                    LEFT JOIN (
+                        SELECT invoice_id,
+                               SUM(COALESCE(insurance_paid_amount,0)) AS insurer_paid
+                        FROM Claims GROUP BY invoice_id
+                    ) cl ON cl.invoice_id=i.Invoice_id
+                    WHERE ts.branch_id=%s
+                      AND a.status='Completed'
+                      AND i.created_at BETWEEN %s AND %s
+                    GROUP BY ts.doctor_id
+                ) fin ON fin.doctor_id=d.doctor_id
+                WHERE e.branch_id=%s
+                ORDER BY COALESCE(fin.invoiced,0) DESC, u.full_name, d.doctor_id
+            """, [branch_id, start, end, branch_id])
+            rows = cursor.fetchall()
+        items = [{
+            'doctor_id': r[0], 'doctor_name': r[1],
+            'invoice_count': int(r[2] or 0),
+            'invoiced_revenue': _money(r[3]),
+            'patient_payments_received': _money(r[4]),
+            'insurance_allocated': _money(r[5]),
+            'insurance_payments_received': _money(r[6]),
+            'total_cash_collected': _money(Decimal(r[4] or 0) + Decimal(r[6] or 0)),
+            'patient_outstanding': _money(r[7]),
+        } for r in rows]
+        return JsonResponse({
+            'status': 'success', 'branch_id': branch_id,
+            'start_date': start.isoformat(), 'end_date': end.isoformat(),
+            'period_basis': 'invoice_created_at',
+            'payment_basis': 'all_completed_patient_payments_to_date_for_selected_invoices',
+            'data': items,
+        })
+    except DatabaseError:
+        logger.exception('Doctor revenue report failed')
+        return _error('Unable to retrieve doctor revenue', 500)
