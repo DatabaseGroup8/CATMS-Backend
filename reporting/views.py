@@ -193,3 +193,104 @@ def doctor_revenue(request):
     except DatabaseError:
         logger.exception('Doctor revenue report failed')
         return _error('Unable to retrieve doctor revenue', 500)
+
+
+@jwt_required(allowed_roles=['Manager'])
+@require_GET
+def patients_with_outstanding_balances(request):
+    """Report 3: Total remaining patient responsibility, grouped by patient."""
+    try:
+        branch_id = _manager_branch(request)
+        if branch_id is None:
+            return _error('Manager branch access denied', 403)
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT p.patient_id, p.full_name, p.contact_no,
+                       COUNT(*) AS unpaid_invoice_count,
+                       SUM(x.patient_outstanding) AS outstanding_total
+                FROM (
+                    SELECT a.patient_id,
+                           i.Invoice_id,
+                           GREATEST(
+                               COALESCE(i.sub_total,0)
+                               -COALESCE(i.insurance_claimed_amount,0)
+                               -COALESCE(pay.paid,0),0
+                           ) AS patient_outstanding
+                    FROM Invoice i
+                    JOIN Appointment a ON a.appointment_id=i.appointment_id
+                    JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+                    LEFT JOIN (
+                        SELECT Invoice_id,
+                               SUM(CASE WHEN status='Completed'
+                                   THEN COALESCE(payment_amount,0) ELSE 0 END) AS paid
+                        FROM Payment GROUP BY Invoice_id
+                    ) pay ON pay.Invoice_id=i.Invoice_id
+                    WHERE ts.branch_id=%s
+                ) x
+                JOIN Patient p ON p.patient_id=x.patient_id
+                WHERE x.patient_outstanding>0
+                GROUP BY p.patient_id, p.full_name, p.contact_no
+                ORDER BY outstanding_total DESC, p.full_name
+            """, [branch_id])
+            rows = cursor.fetchall()
+        return JsonResponse({
+            'status': 'success', 'branch_id': branch_id,
+            'basis': 'current_patient_balance_after_allocated_insurance_and_completed_payments',
+            'patient_count': len(rows),
+            'data': [{
+                'patient_id': r[0], 'patient_name': r[1], 'contact_no': r[2],
+                'unpaid_invoice_count': int(r[3]),
+                'outstanding_balance': _money(r[4]),
+            } for r in rows],
+        })
+    except DatabaseError:
+        logger.exception('Outstanding patients report failed')
+        return _error('Unable to retrieve outstanding patients', 500)
+
+
+@jwt_required(allowed_roles=['Manager'])
+@require_GET
+def treatments_by_category(request):
+    """Report 4: Count recorded Treatment rows by category and service date."""
+    try:
+        start, end = _period(request)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
+        branch_id = _manager_branch(request)
+        if branch_id is None:
+            return _error('Manager branch access denied', 403)
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT cat.treatment_category_id, cat.category_name,
+                       COALESCE(stats.treatment_count,0) AS treatment_count
+                FROM Treatment_Category cat
+                LEFT JOIN (
+                    SELECT tc.treatment_category_id,
+                           COUNT(t.treatment_id) AS treatment_count
+                    FROM Treatment t
+                    JOIN Treatment_Catalogue tc
+                        ON tc.treatment_service_code=t.treatment_service_code
+                    JOIN consultation_record cr
+                        ON cr.medical_record_id=t.medical_record_id
+                    JOIN Appointment a ON a.appointment_id=cr.appointment_id
+                    JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+                    WHERE ts.branch_id=%s
+                      AND ts.available_date BETWEEN %s AND %s
+                    GROUP BY tc.treatment_category_id
+                ) stats ON stats.treatment_category_id=cat.treatment_category_id
+                ORDER BY treatment_count DESC, cat.category_name
+            """, [branch_id, start, end])
+            rows = cursor.fetchall()
+        return JsonResponse({
+            'status': 'success', 'branch_id': branch_id,
+            'start_date': start.isoformat(), 'end_date': end.isoformat(),
+            'period_basis': 'appointment_service_date',
+            'data': [{
+                'treatment_category_id': r[0], 'category_name': r[1],
+                'treatment_count': int(r[2] or 0),
+            } for r in rows],
+        })
+    except DatabaseError:
+        logger.exception('Treatment categories report failed')
+        return _error('Unable to retrieve treatment report', 500)
