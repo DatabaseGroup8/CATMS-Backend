@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import workflow_views as workflow
+from . import catalogue_views
 
 urlpatterns = [
     
@@ -38,4 +39,10 @@ urlpatterns += [
     path('medications/search/', workflow.search_medications, name='search_medications'),
     path('treatments/catalogue/add/', workflow.add_treatment_catalogue, name='add_treatment_catalogue'),
     path('treatments/search/', workflow.search_treatments, name='search_treatments'),
+
+    path('conditions/categories/',catalogue_views.list_condition_categories,name='list_condition_categories'),
+    path('conditions/',catalogue_views.list_conditions,name='list_conditions'),
+    path('treatments/categories/',catalogue_views.list_treatment_categories,name='list_treatment_categories'),
+    path('specializations/',catalogue_views.list_specializations,name='list_specializations'),
+    path('doctors/<int:doctor_id>/specializations/',catalogue_views.assign_doctor_specialization,name='assign_doctor_specialization'),
 ]

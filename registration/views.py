@@ -16,6 +16,8 @@ from django.http import JsonResponse
 from django.db import connection, DatabaseError
 from django.views.decorators.http import require_GET
 from accounts.decorators import jwt_required
+from django.db import transaction
+from django.views.decorators.http import require_http_methods
 
 logger = logging.getLogger(__name__)
 
@@ -315,61 +317,68 @@ def get_patient_appointments(request):
 @csrf_exempt
 @jwt_required(allowed_roles=['Receptionist'])
 def create_time_slot(request):
-    """POST JSON: doctor_id, branch_id, available_date, start_time, end_time.
-
-    Dates use YYYY-MM-DD and times use HH:MM[:SS]. Requires the MySQL
-    CreateTimeSlot procedure; it must enforce schedule overlap constraints.
-    """
-    # Reject malformed JSON and invalid fields before calling the database.
     try:
         data = json.loads(request.body)
         if not isinstance(data, dict):
-            raise ValueError("The request body must be a JSON object.")
-        for field in ("doctor_id", "branch_id"):
-            if type(data.get(field)) is not int or data[field] <= 0:
-                raise ValueError(f"{field} must be a positive integer.")
-        for field in ("available_date", "start_time", "end_time"):
-            if not isinstance(data.get(field), str):
-                raise ValueError(f"{field} is required and must be a string.")
-            
-        # Parse dates and times so comparisons use actual date/time values.
-        available_date = date.fromisoformat(data["available_date"])
-        start_time = time.fromisoformat(data["start_time"])
-        end_time = time.fromisoformat(data["end_time"])
-        # MySQL TIME fields here represent local times without UTC offsets.
-        if start_time.tzinfo is not None or end_time.tzinfo is not None:
-            raise ValueError("Times must be local times without a UTC offset.")
-        if end_time <= start_time:
-            raise ValueError("end_time must be after start_time.")
-        if available_date < timezone.localdate():
-            raise ValueError("available_date must not be in the past.")
-    except (ValueError, UnicodeDecodeError) as exc:
-        return JsonResponse({"success": False, "error": str(exc)}, status=400)
-
+            raise ValueError('JSON object required')
+        doctor_id = data.get('doctor_id')
+        available = data.get('available', True)
+        if type(doctor_id) is not int or doctor_id <= 0:
+            raise ValueError('doctor_id must be positive integer')
+        if type(available) is not bool:
+            raise ValueError('available must be boolean')
+        slot_date = date.fromisoformat(data['available_date'])
+        start = time.fromisoformat(data['start_time'])
+        end = time.fromisoformat(data['end_time'])
+        if start.tzinfo or end.tzinfo or end <= start:
+            raise ValueError('Invalid time range')
+        if slot_date < timezone.localdate():
+            raise ValueError('Cannot create past slot')
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return JsonResponse({'success': False,
+                             'error': 'Invalid slot data'}, status=400)
     try:
         with connection.cursor() as cursor:
-            # Reset connection-scoped variables that receive the procedure outputs.
-            cursor.execute("SET @slot_id = NULL, @slot_message = NULL, @slot_success = 0")
-            # Bind request values as parameters; the procedure manages its transaction.
-            cursor.execute(
-                "CALL AddTimeSlot(%s, %s, %s, %s, %s, @slot_id, @slot_message, @slot_success)",
-                [data["doctor_id"], data["branch_id"], available_date, start_time, end_time],
-            )
-            # Consume CALL result sets before selecting its OUT parameters.
+            cursor.execute('''
+                SELECT 1 FROM Employee
+                WHERE employee_id=%s AND branch_id=%s
+                  AND role='Receptionist' AND status='Active'
+            ''', [employee_id, branch_id])
+            if cursor.fetchone() is None:
+                return JsonResponse({'success': False,
+                                     'error': 'Access denied'}, status=403)
+            cursor.execute('''
+                SET @slot_id=NULL, @slot_message=NULL,
+                    @slot_success=0
+            ''')
+            cursor.execute('''
+                CALL AddTimeSlot(
+                  %s,%s,%s,%s,%s,%s,
+                  @slot_id,@slot_message,@slot_success
+                )
+            ''', [doctor_id, branch_id, slot_date,
+                  start, end, available])
             while cursor.nextset():
                 pass
-            cursor.execute("SELECT @slot_id, @slot_message, @slot_success")
+            cursor.execute('SELECT @slot_id,@slot_message,@slot_success')
             slot_id, message, success = cursor.fetchone()
-    # Keep database diagnostics in server logs and return a generic error.
+        if not success:
+            logger.warning('AddTimeSlot rejected: %s', message)
+            return JsonResponse({'success': False,
+                                 'error': (message if message in {
+                                     'Invalid slot details',
+                                     'Doctor not active in branch',
+                                     'Overlapping doctor time slot'
+                                 } else 'Unable to create time slot')}, status=409)
+        return JsonResponse({'success': True,
+                             'time_slot_id': slot_id,
+                             'available': available}, status=201)
     except DatabaseError:
-        logger.exception("Failed to create time slot")
-        return JsonResponse({"success": False, "error": "Unable to create time slot."}, status=500)
-    # Handle failures returned by the procedure, even when CALL itself succeeds.
-    if not success:
-        logger.warning("CreateTimeSlot failed: %s", message)
-        return JsonResponse({"success": False, "error": "Time slot could not be created. Check the doctor, branch and schedule."}, status=400)
-    # Return the new record ID with HTTP 201 (Created).
-    return JsonResponse({"success": True, "time_slot_id": slot_id}, status=201)
+        logger.exception('Create slot failed')
+        return JsonResponse({'success': False,
+                             'error': 'Database error'}, status=500)
 
 
 @require_POST
@@ -413,8 +422,8 @@ def book_appointment(request):
             
             # Call the stored procedure with the newly required 'type' parameter
             cursor.execute(
-                "CALL BookAppointment(%s, %s, %s, %s, @appointment_id, @appointment_number, @booking_message, @booking_success)",
-                [data["patient_id"], data["time_slot_id"], appointment_type, notes],
+                "CALL BookAppointment(%s, %s, %s, %s, %s, @appointment_id, @appointment_number, @booking_message, @booking_success)",
+                [data["patient_id"], data["time_slot_id"], appointment_type, notes, request.employee_id],
             )
             
             # Consume CALL result sets to prevent "Commands out of sync" errors
@@ -467,7 +476,7 @@ def get_daily_schedule(request):
                 SELECT ts.time_slot_id, u.full_name,
                        COALESCE(spec.specializations, 'Not assigned'),
                        ts.available_date, ts.start_time, ts.end_time,
-                       COALESCE(booked.current_patients, 0), ts.is_booked
+                       COALESCE(booked.current_patients, 0), ts.availabe
                 FROM Time_Slot ts
                 JOIN Doctor d ON d.doctor_id = ts.doctor_id
                 JOIN Employee e ON e.employee_id = d.employee_id
@@ -504,10 +513,73 @@ def get_daily_schedule(request):
     for r in rows:
         # No capacity field exists, so don't report Fully Booked based on an invented limit.
         data.append({
-            'time_slot_id': r[0], 'doctor_name': r[1], 'specialty': r[2],
-            'date': str(r[3]), 'start_time': str(r[4]), 'end_time': str(r[5]),
-            'current_patients': r[6], 'max_patients': None,
-            'status': 'Closed' if r[7] else 'Open',
-        })
+                        'time_slot_id': r[0],
+                        'doctor_name': r[1],
+                        'specialty': r[2],
+                        'date': str(r[3]),
+                        'start_time': str(r[4]),
+                        'end_time': str(r[5]),
+                        'booked_count': r[6],
+                        'available': bool(r[7]),
+                        'status': 'Open' if r[7] else 'Closed'
+                    })
     return JsonResponse({'status':'success','date':str(selected_date),
                          'branch_id':branch_id, 'count':len(data), 'data': data})
+
+@csrf_exempt
+@jwt_required(allowed_roles=['Receptionist'])
+@require_http_methods(['PATCH'])
+def update_time_slot_availability(request, slot_id):
+    try:
+        body = json.loads(request.body)
+        if not isinstance(body, dict):
+            raise ValueError('JSON object required')
+        available = body.get('available')
+        if type(available) is not bool:
+            raise ValueError('available must be boolean')
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+
+    except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
+        return JsonResponse({'success': False,
+                             'error': 'Invalid request'}, status=400)
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute('''
+                    SELECT 1 FROM Employee
+                    WHERE employee_id=%s AND branch_id=%s
+                      AND role='Receptionist' AND status='Active'
+                ''', [employee_id, branch_id])
+                if cursor.fetchone() is None:
+                    return JsonResponse({'success': False,
+                                         'error': 'Access denied'}, status=403)
+                cursor.execute('''
+                    SELECT available,available_date FROM Time_Slot
+                    WHERE time_slot_id=%s AND branch_id=%s FOR UPDATE
+                ''', [slot_id, branch_id])
+                slot = cursor.fetchone()
+                if slot is None:
+                    return JsonResponse({'success': False,
+                                         'error': 'Slot not found'}, status=404)
+                if slot[1] < timezone.localdate():
+                    return JsonResponse({'success': False,
+                                         'error': 'Cannot edit past slot'}, status=400)
+                if bool(slot[0]) != available:
+                    cursor.execute('''
+                        UPDATE Time_Slot SET available=%s
+                        WHERE time_slot_id=%s
+                    ''', [available, slot_id])
+                cursor.execute('''
+                    SELECT COUNT(*) FROM Appointment
+                    WHERE time_slot_id=%s AND status='Scheduled'
+                ''', [slot_id])
+                booked = cursor.fetchone()[0]
+        return JsonResponse({'success': True,
+                             'time_slot_id': slot_id,
+                             'available': available,
+                             'scheduled_appointments': booked})
+    except DatabaseError:
+        logger.exception('Update slot availability failed')
+        return JsonResponse({'success': False,
+                             'error': 'Database error'}, status=500)
