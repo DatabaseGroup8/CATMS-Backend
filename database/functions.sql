@@ -1,193 +1,113 @@
-DELIMITER //
-
--- Function 1: Generate Invoice Number
-DROP FUNCTION IF EXISTS `GenerateInvoiceNumber`//
-CREATE FUNCTION `GenerateInvoiceNumber`()
-RETURNS VARCHAR(20)
-READS SQL DATA
-BEGIN
-    DECLARE v_invoice_count INT;
-    DECLARE v_invoice_number VARCHAR(20);
-    
-    -- Count invoices created today to append a daily sequence
-    SELECT COUNT(*) + 1 INTO v_invoice_count
-    FROM Invoice 
-    WHERE created_at = CURDATE(); 
-    
-    -- Format: INV-20260919-0001
-    SET v_invoice_number = CONCAT('INV-', DATE_FORMAT(CURDATE(), '%Y%m%d'), '-', LPAD(v_invoice_count, 4, '0'));
-    
-    RETURN v_invoice_number;
-END//
-
--- Function 2: Calculate Outstanding Balance
+-- CATMS functions, fresh install, MySQL 8.0.16+
+-- Run AFTER tables.sql and BEFORE procedures.sql/triggers.sql.
+-- Intentional source spelling preserved: CaculateInsuranceCoverage.
 DELIMITER $$
-DROP FUNCTION IF EXISTS `CalculateOutstandingBalance`$$
-CREATE FUNCTION `CalculateOutstandingBalance`(p_invoice_id INT)
-RETURNS DECIMAL(10,2)
-READS SQL DATA
+
+CREATE FUNCTION IsValidEmail(p_email VARCHAR(255)) RETURNS BOOLEAN
+DETERMINISTIC NO SQL
 BEGIN
-    DECLARE v_sub_total DECIMAL(10,2) DEFAULT 0.00;
-    DECLARE v_insurance_claimed DECIMAL(10,2) DEFAULT 0.00;
-    DECLARE v_total_paid DECIMAL(10,2) DEFAULT 0.00;
-    
-    -- Get base bill and insurance deductions[cite: 1]
-    SELECT sub_total, COALESCE(insurance_claimed_amount, 0)
-    INTO v_sub_total, v_insurance_claimed
-    FROM Invoice
-    WHERE invoice_id = p_invoice_id;
-    
-    -- Sum all successful payments made towards this invoice
-    -- Note: Assumes a 'payment_amount' column is added to Payment table--There is no payment amount column
-    SELECT COALESCE(SUM(payment_amount), 0) 
-    INTO v_total_paid
-    FROM Payment
-    WHERE invoice_id = p_invoice_id AND status = 'Completed';
-    
-    -- Return what the patient still owes[cite: 2]
-    RETURN v_sub_total - v_insurance_claimed - v_total_paid;
+    RETURN p_email IS NOT NULL AND
+           p_email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}$';
 END$$
 
---Function 3: GetConsultationDuration
-DELIMITER //
-CREATE FUNCTION GetConsultationDuration(p_consultation_id INT) 
-RETURNS INT
-READS SQL DATA
+CREATE FUNCTION CalculateAge(p_dob DATE) RETURNS INT
+NOT DETERMINISTIC NO SQL
 BEGIN
-    DECLARE v_duration_minutes INT;
-
-    -- Calculate the difference in minutes between end_time and start_time
-    SELECT TIMESTAMPDIFF(MINUTE, ts.start_time, ts.end_time) INTO v_duration_minutes
-    FROM Consultation_record cr
-    JOIN Appointment a ON cr.appointment_id = a.appointment_id
-    JOIN Time_Slot ts ON a.time_slot_id = ts.time_slot_id
-    WHERE cr.consultation_rec_id = p_consultation_id;
-
-    -- Return the calculated duration (or 0 if not found)
-    RETURN COALESCE(v_duration_minutes, 0);
-END //
-
-DELIMITER ;
-
---Function 4: Check Doctor Availability
-DELIMITER $$
-DROP FUNCTION IF EXISTS IsDoctorAvailable$$
-CREATE FUNCTION IsDoctorAvailable(
-    p_doctor_id INT,
-    p_date DATE,
-    p_time TIME
-)
-RETURNS BOOLEAN
-READS SQL DATA
-BEGIN
-    DECLARE slot_available INT;
-    
-    SELECT COUNT(*) INTO slot_available
-    FROM time_slot
-    WHERE doctor_id = p_doctor_id
-    AND available_date = p_date
-    AND start_time <= p_time
-    AND end_time > p_time
-    AND is_booked = FALSE;
-    
-    RETURN slot_available > 0;
+    IF p_dob IS NULL THEN RETURN NULL; END IF;
+    RETURN TIMESTAMPDIFF(YEAR,p_dob,CURDATE());
 END$$
 
---Function 5: Count patient appointments
-DELIMITER $$
-DROP FUNCTION IF EXISTS CountPatientAppointments$$
-CREATE FUNCTION CountPatientAppointments(
-    p_patient_id INT,
-    p_status VARCHAR(50)
-)
-RETURNS INT
+CREATE FUNCTION CountPatientAppointments(p_patient_id INT,p_status VARCHAR(50)) RETURNS INT
 READS SQL DATA
 BEGIN
-    DECLARE appointment_count INT;
-    
-    SELECT COUNT(*) INTO appointment_count
-    FROM Appointment
-    WHERE patient_id = p_patient_id
-    AND (p_status IS NULL OR status = p_status);
-    
-    RETURN appointment_count;
+    DECLARE v_count INT DEFAULT 0;
+    SELECT COUNT(*) INTO v_count FROM Appointment
+      WHERE patient_id=p_patient_id AND (p_status IS NULL OR status=p_status);
+    RETURN v_count;
 END$$
-DELIMITER ;
 
---Function 6:Calculate Insurance Coverage
-DELIMITER //
-
-CREATE FUNCTION CaculateInsuranceCoverage(
-    p_amount DECIMAL(10,2),
-    p_copayment_percentage DECIMAL(10,2)
-)
-RETURNS DECIMAL(10,2)
-DETERMINISTIC
-BEGIN
-
-    RETURN ROUND(p_amount * (100 - p_copayment_percentage) / 100,2);
-
-END //
-DELIMITER ;
-
---Function 7:IsInsuranceActive
-DELIMITER //
-
-CREATE FUNCTION IsInsuranceActive(
-    p_insurance_id INT
-)
-RETURNS BOOLEAN
+CREATE FUNCTION GetConsultationDuration(p_consultation_id INT) RETURNS INT
 READS SQL DATA
 BEGIN
+    DECLARE v_minutes INT DEFAULT 0;
+    SELECT TIMESTAMPDIFF(MINUTE,
+               TIMESTAMP(ts.available_date,ts.start_time),
+               TIMESTAMP(ts.available_date,ts.end_time))
+      INTO v_minutes FROM consultation_record cr
+      JOIN Appointment a ON a.appointment_id=cr.appointment_id
+      JOIN Time_Slot ts ON a.time_slot_id=ts.time_slot_id
+      WHERE cr.consultation_rec_id=p_consultation_id;
+    RETURN COALESCE(v_minutes,0);
+END$$
 
+-- This only reflects the legacy is_booked flag; no slot capacity in current schema.
+CREATE FUNCTION IsDoctorAvailable(p_doctor_id INT,p_date DATE,p_time TIME) RETURNS BOOLEAN
+READS SQL DATA
+BEGIN
+    DECLARE v_count INT DEFAULT 0;
+    SELECT COUNT(*) INTO v_count FROM Time_Slot
+    WHERE doctor_id=p_doctor_id AND available_date=p_date
+      AND start_time<=p_time AND end_time>p_time AND is_booked=FALSE;
+    RETURN v_count>0;
+END$$
+
+CREATE FUNCTION IsInsuranceActive(p_insurance_id INT) RETURNS BOOLEAN
+READS SQL DATA
+BEGIN
     DECLARE v_active BOOLEAN DEFAULT FALSE;
-
-    SELECT
-        (
-            status = 'Active'
-            AND started_date <= CURDATE()
-            AND (end_date IS NULL OR end_date >= CURDATE())
-        )
-    INTO v_active
-    FROM Insurance
-    WHERE Insurance_id = p_insurance_id;
-
-    RETURN COALESCE(v_active, FALSE);
-
-END //
-
-DELIMITER ;
-
---Function 8:Check email for valid format
-DELIMITER $$
-
-DROP FUNCTION IF EXISTS IsValidEmail$$
-CREATE FUNCTION IsValidEmail(p_email VARCHAR(255))
-RETURNS BOOLEAN
-DETERMINISTIC
-BEGIN
-    IF p_email IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    RETURN p_email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$';
+    SELECT (status='Active' AND started_date<=CURDATE()
+        AND (end_date IS NULL OR end_date>=CURDATE()))
+      INTO v_active FROM Insurance WHERE Insurance_id=p_insurance_id;
+    RETURN COALESCE(v_active,FALSE);
 END$$
 
-DELIMITER ;
-
---Function 9: Check the patient's Age
-DELIMITER $$
-
-DROP FUNCTION IF EXISTS CalculateAge$$
-CREATE FUNCTION CalculateAge(p_dob DATE)
-RETURNS INT
-DETERMINISTIC
+CREATE FUNCTION CaculateInsuranceCoverage(p_amount DECIMAL(10,2),p_copayment_percentage DECIMAL(10,2))
+RETURNS DECIMAL(10,2) DETERMINISTIC NO SQL
 BEGIN
-    IF p_dob IS NULL THEN
+    IF p_amount IS NULL OR p_amount<0 OR p_copayment_percentage IS NULL
+       OR p_copayment_percentage<0 OR p_copayment_percentage>100 THEN
         RETURN NULL;
     END IF;
-
-    RETURN TIMESTAMPDIFF(YEAR, p_dob, CURDATE());
+    RETURN ROUND(p_amount*(100-p_copayment_percentage)/100,2);
 END$$
 
+CREATE FUNCTION CalculateMedicationTotal(p_medical_record_id INT) RETURNS DECIMAL(12,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(quantity*unit_price),0.00) INTO v_total
+       FROM Prescription WHERE medical_record_id=p_medical_record_id;
+    RETURN v_total;
+END$$
+
+CREATE FUNCTION CalculateTreatmentTotal(p_medical_record_id INT) RETURNS DECIMAL(12,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(unit_price),0.00) INTO v_total
+      FROM Treatment WHERE medical_record_id=p_medical_record_id;
+    RETURN v_total;
+END$$
+
+CREATE FUNCTION CalculateEligibleTreatmentTotal(p_invoice_id INT) RETURNS DECIMAL(12,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT 0.00;
+    SELECT COALESCE(SUM(t.unit_price),0.00) INTO v_total
+    FROM Invoice i JOIN consultation_record cr ON cr.appointment_id=i.appointment_id
+    JOIN Treatment t ON t.medical_record_id=cr.medical_record_id
+    WHERE i.Invoice_id=p_invoice_id AND t.insurance_eligible=TRUE;
+    RETURN v_total;
+END$$
+
+CREATE FUNCTION CalculateOutstandingBalance(p_invoice_id INT) RETURNS DECIMAL(12,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_total DECIMAL(12,2) DEFAULT NULL;
+    SELECT i.sub_total - COALESCE(i.insurance_claimed_amount,0) -
+      COALESCE((SELECT SUM(p.payment_amount) FROM Payment p
+        WHERE p.Invoice_id=i.Invoice_id AND p.status='Completed'),0)
+      INTO v_total FROM Invoice i WHERE i.Invoice_id=p_invoice_id;
+    RETURN v_total; -- NULL if invoice does not exist
+END$$
 DELIMITER ;

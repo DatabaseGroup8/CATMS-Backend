@@ -9,6 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.db import connection
 from django.contrib.auth.hashers import check_password
+from django.contrib.auth.hashers import make_password
 from .decorators import jwt_required
 
 logger = logging.getLogger(__name__)
@@ -138,14 +139,7 @@ def register_doctor(request):
         return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
     
     
-    
-import json
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
-from django.db import connection
-from django.contrib.auth.hashers import make_password
-from .decorators import jwt_required  # Import your new custom decorator
+
 
 @csrf_exempt
 @require_POST

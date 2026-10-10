@@ -149,60 +149,46 @@ def get_doctor_performance_report(request):
             'message': 'Unable to generate report'
         }, status=500)
 
-@csrf_exempt
 @jwt_required(allowed_roles=['Manager'])
+@require_GET
 def get_common_conditons_report(request):
-    # Check that the request uses the GET Method
-    if request == 'GET':
-        try:
-            # Open a database cursor to execute raw SQL
-            with connection.cursor() as cursor:
+    """Counts conditions on patients registered at the manager's branch.
 
-                # Find the no of times each medical condition has been recorded
-                cursor.execute("""
-                    SELECT
-                        c.condition_id,
-                        c.condition_name,
-                        COUNT(pc.patient_condition_id) AS occurence_count
-                    FROM Patient_condtion pc
-                    JOIN Conditions c
-                        ON pc.condition_id = c.condition_id
-                    GROUP BY
-                        c.condition_id,
-                        c.condition_name
-                    ORDER BY
-                        occurence_count DESC,
-                """)
+    This is NOT a diagnosis-at-branch report because Patient_condition lacks a
+    consultation/branch identifier in the current schema.
+    """
+    branch_id = getattr(request, 'branch_id', None)
+    employee_id = getattr(request, 'employee_id', None)
+    if not branch_id or not employee_id:
+        return JsonResponse({'status':'error','message':'Invalid manager context'}, status=403)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT c.condition_id, c.condition_name,
+                       COUNT(pc.patient_condition_id) AS occurrence_count
+                FROM Conditions c
+                LEFT JOIN Patient_condition pc ON pc.condition_id = c.condition_id
+                    AND EXISTS (
+                        SELECT 1 FROM Patient p
+                        WHERE p.patient_id=pc.patient_id
+                          AND p.registered_branch_id=%s
+                    )
+                WHERE EXISTS (
+                    SELECT 1 FROM Employee e
+                    WHERE e.employee_id=%s AND e.branch_id=%s
+                      AND e.status='Active' AND e.role='Manager'
+                )
+                GROUP BY c.condition_id,c.condition_name
+                ORDER BY occurrence_count DESC,c.condition_name
+            """, [branch_id, employee_id, branch_id])
+            rows=cursor.fetchall()
+    except DatabaseError:
+        logger.exception('Common conditions report failed')
+        return JsonResponse({'status':'error','message':'Unable to generate report'},status=500)
+    return JsonResponse({'status':'success','data':[
+        {'condition_id':r[0],'condition_name':r[1],'occurrence_count':r[2]}
+        for r in rows]})
 
-                # Retrieve all condition records
-                rows = cursor.fetchall()
-
-                # Get the column names returned by the query
-                columns = [column[0] for column in cursor.description]
-
-                # Convert each database row into a dictionary
-                report = [
-                    dict(zip(columns, row))
-                    for row in rows
-                ]
-
-            # Return the common condtion report as JSON
-            return JsonResponse({
-                'status':'success',
-                'report': report
-            }, status = 200)
-
-        except Exception as e:
-            return JsonResponse({
-                'status':'critical_error',
-                'message':str(e)
-            }, status = 500)
-
-    # Reject requests that are not GET
-    return JsonResponse({
-        'status':'error',
-        'message':'Only GET method is allowed'
-    }, status = 405)
 
 
 @require_GET

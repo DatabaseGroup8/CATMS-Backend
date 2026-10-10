@@ -1,304 +1,87 @@
-DELIMITER //
--- Procedure: AddMedication
+-- CATMS FINAL procedures, fresh install on MySQL 8.0.16+.
+-- Run after functions.sql; keep Django stored-procedure signatures unchanged.
+-- No retired procedures: CreateConsultationWithDetails, GenerateInvoice,
+-- AddPrescriptionWithItems, AddTreatment, AddClaim, ProcessInsuranceClaim.
+-- AuthenticateUser omitted (unnecessary and unsafe hash equality; Django verifies passwords).
+DELIMITER $$
 
-CREATE PROCEDURE AddMedication(
-    --IN parameters receive the raw data from backend
-    --MySQL automatically takes values from the backend and drop into IN parameters
-    IN p_generic_name VARCHAR(100),
-    IN p_manufacturer VARCHAR(100),
-    IN p_form VARCHAR(50),
-    IN p_contraindications VARCHAR(255),
-    IN p_side_effects VARCHAR(255),
-    
-    --OUT parameters send the final result back to the backend
-    OUT p_medication_id INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
+CREATE PROCEDURE AddTimeSlot(
+    IN p_doctor_id INT, IN p_branch_id INT, IN p_available_date DATE,
+    IN p_start_time TIME, IN p_end_time TIME,
+    OUT p_time_slot_id INT, OUT p_error_message VARCHAR(255), OUT p_success BOOLEAN
 )
 proc_label: BEGIN
-    DECLARE v_duplicate_count INT DEFAULT 0; --to keep track of how many identical rows already exist in the database
-    
-    -- 1. The Error Handler: If anything crashes, undo the changes and report back(SQL version of try....catch)
+    DECLARE v_employee_id INT DEFAULT NULL;
+    DECLARE v_count INT DEFAULT 0;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
+        GET DIAGNOSTICS CONDITION 1 p_error_message=MESSAGE_TEXT;
+        ROLLBACK; SET p_time_slot_id=NULL; SET p_success=FALSE;
     END;
-    
-    -- 2. Initialize Outputs
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    SET p_medication_id = NULL;
-    
-    -- 3. Start Transaction
+    SET p_time_slot_id=NULL; SET p_error_message=NULL; SET p_success=FALSE;
+    IF p_doctor_id IS NULL OR p_branch_id IS NULL OR p_available_date IS NULL
+       OR p_start_time IS NULL OR p_end_time IS NULL OR p_end_time<=p_start_time
+       OR p_available_date<CURDATE() THEN
+        SET p_error_message='Invalid doctor, branch, date or time range';
+        LEAVE proc_label;
+    END IF;
     START TRANSACTION;
-    
-    -- 4. Validation: Prevent empty names
-    IF p_generic_name IS NULL OR TRIM(p_generic_name) = '' THEN
-        SET p_error_message = 'Generic name is required';
-        ROLLBACK;
-        LEAVE proc_label;
+    -- Lock employee for concurrent slot creation by this doctor.
+    SELECT d.employee_id INTO v_employee_id
+      FROM Doctor d JOIN Employee e ON e.employee_id=d.employee_id
+      WHERE d.doctor_id=p_doctor_id AND e.branch_id=p_branch_id
+        AND e.role='Doctor' AND e.status='Active' FOR UPDATE;
+    IF v_employee_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Doctor not active at selected branch';
     END IF;
-    
-    -- 5. Validation: Check for exact duplicates in the Medication table
-    SELECT COUNT(*) INTO v_duplicate_count
-    FROM Medication
-    WHERE generic_name = p_generic_name 
-    AND manufacturer = p_manufacturer
-    AND form = p_form;
-    
-    IF v_duplicate_count > 0 THEN
-        SET p_error_message = 'This medication already exists in the system';
-        ROLLBACK;
-        LEAVE proc_label;
+    SELECT COUNT(*) INTO v_count FROM Time_Slot ts
+      WHERE ts.doctor_id=p_doctor_id AND ts.available_date=p_available_date
+        AND ts.start_time<p_end_time AND ts.end_time>p_start_time;
+    IF v_count>0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Overlapping doctor time slot';
     END IF;
-    
-    -- 6. Insert the Data
-    INSERT INTO Medication (
-        generic_name, 
-        manufacturer, 
-        form, 
-        contraindications, 
-        side_effects
-    ) VALUES (
-        p_generic_name,
-        p_manufacturer,
-        p_form,
-        p_contraindications,
-        p_side_effects
-    );
-    
-    -- 7. Success! Grab the auto-generated INT ID
-    SET p_medication_id = LAST_INSERT_ID();
-    SET p_success = TRUE;
-    SET p_error_message = 'Medication added successfully';
-    
-    COMMIT;
-END //
---........................................................................................................................
+    INSERT INTO Time_Slot(doctor_id,branch_id,available_date,is_booked,start_time,end_time)
+    VALUES(p_doctor_id,p_branch_id,p_available_date,FALSE,p_start_time,p_end_time);
+    SET p_time_slot_id=LAST_INSERT_ID();
+    COMMIT; SET p_success=TRUE; SET p_error_message='Time slot added successfully';
+END$$
 
--- Procedure: CreateConsultationWithDetails
-DELIMITER //
+CREATE PROCEDURE GetStaffByBranch(
+    IN p_branch_name VARCHAR(100), IN p_role VARCHAR(50),
+    IN p_active_only BOOLEAN, IN p_limit INT, IN p_offset INT
+)
+BEGIN
+    SELECT e.employee_id,e.branch_id,e.role,e.salary,e.joined_date,e.status,
+           u.user_id,u.full_name,u.NIC,u.gender,u.DOB,u.email,u.contact_no,
+           b.branch_name,a.address_line_1,a.address_line_2,a.city,a.province,a.postal_code
+    FROM Employee e JOIN `User` u ON u.user_id=e.user_id
+    JOIN Branch b ON b.branch_id=e.branch_id
+    LEFT JOIN Address a ON a.address_id=u.address_id
+    WHERE b.branch_name=TRIM(p_branch_name)
+      AND (p_role IS NULL OR p_role='' OR e.role=p_role)
+      AND (COALESCE(p_active_only,FALSE)=FALSE OR e.status='Active')
+    ORDER BY u.full_name
+    LIMIT p_limit OFFSET p_offset;
+END$$
 
-CREATE PROCEDURE CreateConsultationWithDetails(
-    IN p_appointment_id INT,
-    IN p_chief_complaint VARCHAR(255),
-    IN p_symptoms TEXT,
-    IN p_diagnosis TEXT,
-    
-    -- JSON Arrays sent from the frontend
-    IN p_treatments JSON,       
-    IN p_prescriptions JSON,    
-    
-    OUT p_consultation_id INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
+CREATE PROCEDURE UpdateStaffSalary(
+    IN p_employee_id INT, IN p_new_salary DECIMAL(10,2),
+    OUT p_error_message VARCHAR(255), OUT p_success BOOLEAN
 )
 proc_label: BEGIN
-    DECLARE v_medical_record_id INT;
-    DECLARE v_invoice_id INT;
-    DECLARE v_appointment_exists INT DEFAULT 0;
-    
-    -- JSON loop variables
-    DECLARE v_idx INT DEFAULT 0;
-    DECLARE v_array_length INT DEFAULT 0;
-    
-    -- Treatment extraction variables
-    DECLARE v_treatment_code INT;
-    
-    -- Prescription extraction variables
-    DECLARE v_med_id INT;
-    DECLARE v_dosage VARCHAR(255);
-    DECLARE v_freq VARCHAR(255);
-    DECLARE v_days INT;
-    DECLARE v_instr VARCHAR(255);
-
-    -- 1. The Error Handler
+    DECLARE v_count INT DEFAULT 0;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-
-    -- 2. Initialize Outputs
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    SET p_consultation_id = NULL;
-
-    -- 3. Start Transaction
+    BEGIN ROLLBACK; SET p_success=FALSE; SET p_error_message='Salary update failed'; END;
+    SET p_success=FALSE; SET p_error_message=NULL;
+    IF p_new_salary IS NULL OR p_new_salary<0 THEN
+        SET p_error_message='Invalid salary'; LEAVE proc_label;
+    END IF;
     START TRANSACTION;
-
-    -- 4. Validate Appointment
-    SELECT COUNT(*) INTO v_appointment_exists 
-    FROM Appointment 
-    WHERE appointment_id = p_appointment_id AND status = 'Scheduled';
-    
-    IF v_appointment_exists = 0 THEN
-        SET p_error_message = 'Valid Scheduled Appointment not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- 5. Insert Medical Record
-    INSERT INTO Medical_record (chief_complaint, symptoms, diagnosis)
-    VALUES (p_chief_complaint, p_symptoms, p_diagnosis);
-    
-    SET v_medical_record_id = LAST_INSERT_ID();
-
-    -- 6. Insert Consultation Record
-    INSERT INTO Consultation_record (appointment_id, medical_record_id) 
-    VALUES (p_appointment_id, v_medical_record_id);
-    
-    SET p_consultation_id = LAST_INSERT_ID();
-
-    -- 7. Update Appointment Status
-    UPDATE Appointment SET status = 'Completed' WHERE appointment_id = p_appointment_id;
-
-    INSERT INTO Invoice (appointment_id, sub_total, insurance_claimed_amount)
-    VALUES (p_appointment_id, 0.00, 0.00);
-
-    -- Get the new invoice ID
-    SET v_invoice_id = LAST_INSERT_ID();
-
-    -- Link invoice to consultation
-    UPDATE Consultation_record
-    SET invoice_id = v_invoice_id
-    WHERE consultation_rec_id = p_consultation_id;
-
-    -- 8. Parse and Insert Treatments
-    IF p_treatments IS NOT NULL AND JSON_LENGTH(p_treatments) > 0 THEN
-        SET v_array_length = JSON_LENGTH(p_treatments);
-        SET v_idx = 0;
-        
-        WHILE v_idx < v_array_length DO
-            -- Dynamically extract the treatment code based on the loop index
-            SET v_treatment_code = JSON_UNQUOTE(JSON_EXTRACT(p_treatments, CONCAT('$[', v_idx, '].treatment_service_code')));
-            
-            INSERT INTO Treatment (medical_record_id, treatment_service_code)
-            VALUES (v_medical_record_id, v_treatment_code);
-            
-            SET v_idx = v_idx + 1;
-        END WHILE;
-    END IF;
-
-    -- 9. Parse and Insert Prescriptions
-    IF p_prescriptions IS NOT NULL AND JSON_LENGTH(p_prescriptions) > 0 THEN
-        SET v_array_length = JSON_LENGTH(p_prescriptions);
-        SET v_idx = 0;
-        
-        WHILE v_idx < v_array_length DO
-            -- Extract all prescription fields for the current array object
-            SET v_med_id = JSON_UNQUOTE(JSON_EXTRACT(p_prescriptions, CONCAT('$[', v_idx, '].medication_id')));
-            SET v_dosage = JSON_UNQUOTE(JSON_EXTRACT(p_prescriptions, CONCAT('$[', v_idx, '].dosage')));
-            SET v_freq = JSON_UNQUOTE(JSON_EXTRACT(p_prescriptions, CONCAT('$[', v_idx, '].frequency')));
-            SET v_days = JSON_UNQUOTE(JSON_EXTRACT(p_prescriptions, CONCAT('$[', v_idx, '].duration_days')));
-            SET v_instr = JSON_UNQUOTE(JSON_EXTRACT(p_prescriptions, CONCAT('$[', v_idx, '].instructions')));
-            
-            INSERT INTO Prescription (medical_record_id, medication_id, dosage, frequency, duration_days, instructions)
-            VALUES (v_medical_record_id, v_med_id, v_dosage, v_freq, v_days, v_instr);
-            
-            SET v_idx = v_idx + 1;
-        END WHILE;
-    END IF;
-
-    -- 10. Commit the Transaction
-    SET p_success = TRUE;
-    SET p_error_message = 'Consultation and details saved successfully';
-
-    COMMIT;
-END //
-DELIMITER;
---...............................................................................................................................
-
--- Procedure: AddPrescriptionWithItems
-DELIMITER //
-
-CREATE PROCEDURE AddPrescriptionWithItems(
-    IN p_medical_record_id INT,
-    IN p_prescription_items JSON,
-    
-    OUT p_items_added INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    DECLARE v_record_exists INT DEFAULT 0;
-    DECLARE v_idx INT DEFAULT 0;
-    DECLARE v_array_length INT DEFAULT 0;
-    
-    -- Extraction variables
-    DECLARE v_med_id INT;
-    DECLARE v_dosage VARCHAR(50);
-    DECLARE v_freq VARCHAR(50);
-    DECLARE v_days VARCHAR(50);
-    DECLARE v_instr VARCHAR(255);
-
-    -- 1. Error Handler
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-
-    -- 2. Initialize Outputs
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    SET p_items_added = 0;
-
-    -- 3. Start Transaction
-    START TRANSACTION;
-
-    -- 4. Validate Medical Record
-    SELECT COUNT(*) INTO v_record_exists 
-    FROM Medical_record 
-    WHERE medical_record_id = p_medical_record_id;
-    
-    IF v_record_exists = 0 THEN
-        SET p_error_message = 'Medical record not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- 5. Validate JSON Array
-    IF p_prescription_items IS NULL OR JSON_LENGTH(p_prescription_items) = 0 THEN
-        SET p_error_message = 'Prescription items array cannot be empty';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- 6. Parse and Insert Loop
-    SET v_array_length = JSON_LENGTH(p_prescription_items);
-    
-    WHILE v_idx < v_array_length DO
-        SET v_med_id = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].medication_id')));
-        SET v_dosage = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].dosage')));
-        SET v_freq = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].frequency')));
-        SET v_days = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].duration_days')));
-        SET v_instr = JSON_UNQUOTE(JSON_EXTRACT(p_prescription_items, CONCAT('$[', v_idx, '].instructions')));
-        
-        INSERT INTO Prescription (
-            medical_record_id, medication_id, dosage, frequency, duration_days, instructions
-        ) VALUES (
-            p_medical_record_id, v_med_id, v_dosage, v_freq, v_days, v_instr
-        );
-        
-        SET p_items_added = p_items_added + 1;
-        SET v_idx = v_idx + 1;
-    END WHILE;
-
-    -- 7. Success Output
-    SET p_success = TRUE;
-    SET p_error_message = 'Prescriptions added successfully';
-
-    COMMIT;
-END //
-DELIMITER;
---......................................................................................................................................
---Procedure: AddPatientCondition
-DELIMITER //
+    SELECT COUNT(*) INTO v_count FROM Employee WHERE employee_id=p_employee_id;
+    IF v_count=0 THEN ROLLBACK; SET p_error_message='Employee not found'; LEAVE proc_label; END IF;
+    UPDATE Employee SET salary=p_new_salary WHERE employee_id=p_employee_id;
+    COMMIT; SET p_success=TRUE; SET p_error_message='Salary updated';
+END$$
 
 CREATE PROCEDURE AddPatientCondition(
     IN p_patient_id INT,
@@ -386,426 +169,7 @@ proc_label: BEGIN
     SET p_error_message = 'Patient condition recorded successfully';
 
     COMMIT;
-END//
-DELIMITER;
---..............................................................................................................
---Procedure: AddTreatment
-DELIMITER //
-
-CREATE PROCEDURE AddTreatment(
-    IN p_medical_record_id INT,
-    IN p_treatment_service_code INT,
-    
-    OUT p_treatment_id INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    DECLARE v_record_exists INT DEFAULT 0;
-    DECLARE v_service_exists INT DEFAULT 0;
-
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    SET p_treatment_id = NULL;
-
-    START TRANSACTION;
-
-    SELECT COUNT(*) INTO v_record_exists 
-    FROM Medical_record 
-    WHERE medical_record_id = p_medical_record_id;
-    
-    IF v_record_exists = 0 THEN
-        SET p_error_message = 'Medical record not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    SELECT COUNT(*) INTO v_service_exists 
-    FROM Treatment_catalogue 
-    WHERE treatment_service_code = p_treatment_service_code;
-    
-    IF v_service_exists = 0 THEN
-        SET p_error_message = 'Invalid treatment service code';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    INSERT INTO Treatment (medical_record_id, treatment_service_code)
-    VALUES (p_medical_record_id, p_treatment_service_code);
-
-    SET p_treatment_id = LAST_INSERT_ID();
-    SET p_success = TRUE;
-    SET p_error_message = 'Treatment added successfully';
-
-    COMMIT;
-END //
-DELIMITER;
-
---.................................................................................................................
-
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS `RecordPayment`//
-
-CREATE PROCEDURE `RecordPayment`(
-    IN p_invoice_id INT,
-    IN p_user_id INT,
-    IN p_appointment_id INT,
-    IN p_payment_amount DECIMAL(10,2),
-    IN p_payment_method VARCHAR(100),
-    OUT p_payment_id INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    DECLARE v_outstanding DECIMAL(10,2);
-    DECLARE v_patient_id INT DEFAULT NULL;
-    DECLARE v_appointment_id INT DEFAULT NULL;
-
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1
-            p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-        SET p_payment_id = NULL;
-    END;
-
-    SET p_success = FALSE;
-    SET p_payment_id = NULL;
-    SET p_error_message = NULL;
-
-    START TRANSACTION;
-
-    -- Find the patient and appointment belonging to this invoice.
-    -- Lock the invoice to prevent concurrent overpayment.
-    SELECT i.appointment_id, a.patient_id
-    INTO v_appointment_id, v_patient_id
-    FROM Invoice i
-    JOIN Appointment a
-        ON i.appointment_id = a.appointment_id
-    WHERE i.Invoice_id = p_invoice_id
-    FOR UPDATE;
-
-    IF v_patient_id IS NULL THEN
-        SET p_error_message = 'Invoice or patient not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Check that the supplied appointment matches the invoice
-    IF p_appointment_id IS NULL
-       OR p_appointment_id <> v_appointment_id THEN
-        SET p_error_message = 'Appointment does not match invoice';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Validate payment amount
-    IF p_payment_amount IS NULL OR p_payment_amount <= 0 THEN
-        SET p_error_message = 'Payment amount must be greater than zero';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Payment table allows only VARCHAR(20)
-    IF p_payment_method IS NULL
-       OR TRIM(p_payment_method) = ''
-       OR CHAR_LENGTH(p_payment_method) > 20 THEN
-        SET p_error_message = 'Invalid payment method';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Calculate the remaining balance
-    SET v_outstanding =
-        CalculateOutstandingBalance(p_invoice_id);
-
-    IF v_outstanding IS NULL THEN
-        SET p_error_message = 'Unable to calculate outstanding balance';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    IF p_payment_amount > v_outstanding THEN
-        SET p_error_message = 'Payment exceeds outstanding balance';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Record the payment using the correct patient_id
-    INSERT INTO Payment (
-        Invoice_id,
-        patient_id,
-        payment_method,
-        status,
-        payment_date,
-        payment_amount
-    )
-    VALUES (
-        p_invoice_id,
-        v_patient_id,
-        p_payment_method,
-        'Completed',
-        CURDATE(),
-        p_payment_amount
-    );
-
-    SET p_payment_id = LAST_INSERT_ID();
-
-    COMMIT;
-
-    SET p_success = TRUE;
-    SET p_error_message = 'Payment recorded successfully';
-
-END proc_label//
-
-DELIMITER ;
-
-
---...................................................................................................................................
--- Procedure: Process Insurance Claim
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS `ProcessInsuranceClaim`//
-CREATE PROCEDURE `ProcessInsuranceClaim`(
-    IN p_invoice_id INT,
-    IN p_insurance_id INT,
-    IN p_claim_amount DECIMAL(10,2),
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    DECLARE v_invoice_exists INT DEFAULT 0;
-    
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-    
-    SET p_success = FALSE;
-    START TRANSACTION;
-    
-    SELECT COUNT(*) INTO v_invoice_exists FROM Invoice WHERE Invoice_id = p_invoice_id;
-    
-    IF v_invoice_exists = 0 THEN
-        SET p_error_message = 'Invoice not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-    
-    INSERT INTO Claims (insurance_id, invoice_id, issued_date)
-    VALUES (p_insurance_id, p_invoice_id, CURDATE());
-    
-    UPDATE Invoice 
-    SET insurance_claimed_amount = insurance_claimed_amount + p_claim_amount
-    WHERE Invoice_id = p_invoice_id;
-    
-    SET p_success = TRUE;
-    SET p_error_message = 'Claim processed successfully';
-    
-    COMMIT;
-END proc_label//
-DELIMITER ;
---...................................................................................................................................
--- Procedure: Add timeslots to timslot table
-
-DELIMITER //
-DROP PROCEDURE IF EXISTS `AddTimeSlot`//
-
-CREATE PROCEDURE `AddTimeSlot`(
-    IN p_doctor_id INT,
-    IN p_branch_id INT,
-    IN p_available_date DATE,
-    IN p_start_time TIME,
-    IN p_end_time TIME,
-   
-    OUT p_time_slot_id INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    -- ALL DECLARE STATEMENTS MUST COME FIRST
-    DECLARE v_doctor_exists INT DEFAULT 0;
-    DECLARE v_branch_exists INT DEFAULT 0;
-   
-    -- Error handler (must be declared AFTER variables but BEFORE any SET/SELECT)
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1
-            p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-   
-    -- NOW executable statements can start
-    -- Initialize outputs
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    SET p_time_slot_id = NULL;
-   
-    -- Start transaction
-    START TRANSACTION;
-   
-    -- Validation: Check if doctor exists
-    SELECT COUNT(*) INTO v_doctor_exists
-    FROM doctor
-    WHERE doctor_id = p_doctor_id;
-   
-    IF v_doctor_exists = 0 THEN
-        SET p_error_message = 'Doctor not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-   
-    -- Validation: Check if branch exists
-    SELECT COUNT(*) INTO v_branch_exists
-    FROM Branch
-    WHERE branch_id = p_branch_id;
-    
-   
-    IF v_branch_exists = 0 THEN
-        SET p_error_message = 'Branch not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-   
-    -- Validation: Check required fields
-    IF p_available_date IS NULL THEN
-        SET p_error_message = 'Available date is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-   
-    IF p_start_time IS NULL THEN
-        SET p_error_message = 'Start time is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-   
-    IF p_end_time IS NULL THEN
-        SET p_error_message = 'End time is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-   
-    -- Validation: Check end_time > start_time
-    IF p_end_time <= p_start_time THEN
-        SET p_error_message = 'End time must be after start time';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-   
-    -- Insert time slot
-    INSERT INTO time_slot (
-        doctor_id, branch_id, available_date, 
-        is_booked, start_time, end_time
-    ) VALUES (
-        p_doctor_id, p_branch_id, p_available_date, 
-        FALSE, p_start_time, p_end_time
-    );
-   
-    -- Success
-    SET p_time_slot_id = LAST_INSERT_ID();
-    SET p_success = TRUE;
-    SET p_error_message = 'Time slot added successfully';
-   
-    COMMIT;
-END proc_label//
-DELIMITER ;
-
---...................................................................................................................................
--- Procedure: CreateTimeSlot
--- DELIMITER //
--- CREATE PROCEDURE `CreateTimeSlot`(
---     IN p_doctor_id INT,
---     IN p_branch_id INT,
---     IN p_available_date DATE,
---     IN p_start_time TIME,
---     IN p_end_time TIME,
---     OUT p_time_slot_id CHAR(36),
---     OUT p_error_message VARCHAR(255),
---     OUT p_success BOOLEAN
--- )
--- proc_label: BEGIN
---     -- ...existing code from AddTimeSlot...
---     DECLARE v_time_slot_id INT;
---     DECLARE v_doctor_exists INT DEFAULT 0;
---     DECLARE v_branch_exists INT DEFAULT 0;
---     --If an SQL error happens while executing this block, run the error-handling code and then exit the block
---     DECLARE EXIT HANDLER FOR SQLEXCEPTION
---     BEGIN
---         GET DIAGNOSTICS CONDITION 1
---             p_error_message = MESSAGE_TEXT;
---         ROLLBACK;
---         SET p_success = FALSE;
---     END;
---     SET p_success = FALSE;
---     SET p_error_message = NULL;
---     SET p_time_slot_id = NULL;
---     START TRANSACTION;
---     SELECT COUNT(*) INTO v_doctor_exists FROM doctor WHERE doctor_id = p_doctor_id;
---     IF v_doctor_exists = 0 THEN
---         SET p_error_message = 'Doctor not found';
---         ROLLBACK;
---         LEAVE proc_label;
---     END IF;
---     SELECT COUNT(*) INTO v_branch_exists FROM branch WHERE branch_id = p_branch_id AND is_active = TRUE;
---     IF v_branch_exists = 0 THEN
---         SET p_error_message = 'Branch not found or inactive';
---         ROLLBACK;
---         LEAVE proc_label;
---     END IF;
---     IF p_available_date IS NULL THEN
---         SET p_error_message = 'Available date is required';
---         ROLLBACK;
---         LEAVE proc_label;
---     END IF;
---     IF p_start_time IS NULL THEN
---         SET p_error_message = 'Start time is required';
---         ROLLBACK;
---         LEAVE proc_label;
---     END IF;
---     IF p_end_time IS NULL THEN
---         SET p_error_message = 'End time is required';
---         ROLLBACK;
---         LEAVE proc_label;
---     END IF;
---     IF p_end_time <= p_start_time THEN
---         SET p_error_message = 'End time must be after start time';
---         ROLLBACK;
---         LEAVE proc_label;
---     END IF;
---     SET v_time_slot_id = UUID();
---     INSERT INTO time_slot (
---         time_slot_id, doctor_id, branch_id, available_date, 
---         is_booked, start_time, end_time
---     ) VALUES (
---         v_time_slot_id, p_doctor_id, p_branch_id, p_available_date, 
---         FALSE, p_start_time, p_end_time
---     );
---     SET p_time_slot_id = v_time_slot_id;
---     SET p_success = TRUE;
---     SET p_error_message = 'Time slot added successfully';
---     COMMIT;
--- END proc_label//
--- DELIMITER;
-
-
---...................................................................................................................................
--- Procedure: BookAppointment
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS `BookAppointment`//
+END$$
 
 CREATE PROCEDURE `BookAppointment`(
     -- INPUT PARAMETERS: Data passed in from the Django backend
@@ -918,80 +282,7 @@ proc_label: BEGIN
     
     -- Save all changes permanently
     COMMIT;
-END //
-
-DELIMITER ;
-
---...................................................................................................................
-DELIMITER //
-
-    --Procedure Generate Invoice--
-DROP PROCEDURE IF EXISTS GenerateInvoice //
-
-CREATE PROCEDURE GenerateInvoice(
-    IN p_appointment_id INT,
-    OUT p_invoice_id INT,
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-    DECLARE v_appointment_exists INT DEFAULT 0;
-    DECLARE v_existing_invoice_id INT DEFAULT NULL;
-    
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-    
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-    
-    START TRANSACTION;
-    
-    -- Verify the appointment exists and is marked as Completed
-    SELECT COUNT(*) INTO v_appointment_exists 
-    FROM Appointment 
-    WHERE appointment_id = p_appointment_id AND status = 'Completed';
-    
-    IF v_appointment_exists = 0 THEN
-        SET p_error_message = 'Cannot generate invoice: Appointment not completed';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Check whether an invoice already exists
-    SELECT MIN(Invoice_id)
-    INTO v_existing_invoice_id
-    FROM Invoice
-    WHERE appointment_id = p_appointment_id;
-
-    IF v_existing_invoice_id IS NOT NULL THEN
-        SET p_invoice_id = v_existing_invoice_id;
-        SET p_success = TRUE;
-        SET p_error_message = 'Existing invoice returned';
-
-        COMMIT;
-        LEAVE proc_label;
-    END IF;
-    
-    -- Insert the blank invoice so billing triggers can populate the sub_total later
-    INSERT INTO Invoice (appointment_id, sub_total, insurance_claimed_amount)
-    VALUES (p_appointment_id, 0.00, 0.00);
-    
-    SET p_invoice_id = LAST_INSERT_ID();
-    SET p_success = TRUE;
-    SET p_error_message = 'Invoice generated successfully';
-    
-    COMMIT;
-END //
-
-DELIMITER ;
-
---...................................................................................................................................
--- Procedure: AddPatientInsurance
-DELIMITER //
+END$$
 
 CREATE PROCEDURE AddPatientInsurance(
     IN p_patient_id INT,
@@ -1108,314 +399,7 @@ proc_label: BEGIN
 
     COMMIT;
 
-END proc_label //
-
-DELIMITER ;
-
---...................................................................................................................................
--- Procedure: AddClaim
-
-DELIMITER //
-
-CREATE PROCEDURE AddClaim(
-    IN p_invoice_id INT,
-    IN p_insurance_id INT,
-
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-
-    DECLARE v_invoice_exists INT DEFAULT 0;
-    DECLARE v_insurance_exists INT DEFAULT 0;
-    DECLARE v_claim_exists INT DEFAULT 0;
-
-    DECLARE v_patient_id INT;
-    DECLARE v_sub_total DECIMAL(10,2);
-    DECLARE v_insurance_amount DECIMAL(10,2);
-
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1
-            p_error_message = MESSAGE_TEXT;
-
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-
-    -- Initialize
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-
-    START TRANSACTION;
-
-    -- Check invoice
-    SELECT COUNT(*)
-    INTO v_invoice_exists
-    FROM Invoice
-    WHERE Invoice_id = p_invoice_id;
-
-    IF v_invoice_exists = 0 THEN
-        SET p_error_message = 'Invoice not found';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Get patient and invoice amount
-    SELECT
-        a.patient_id,
-        i.sub_total
-    INTO
-        v_patient_id,
-        v_sub_total
-    FROM Invoice i
-    JOIN Appointment a
-        ON i.appointment_id = a.appointment_id
-    WHERE i.Invoice_id = p_invoice_id;
-
-    -- Check insurance
-    SELECT COUNT(*)
-    INTO v_insurance_exists
-    FROM Insurance
-    WHERE Insurance_id = p_insurance_id
-      AND patient_id = v_patient_id
-      AND status = 'Active'
-      AND started_date <= CURRENT_DATE
-      AND end_date >= CURRENT_DATE;
-
-    IF v_insurance_exists = 0 THEN
-        SET p_error_message =
-            'Valid active insurance not found for patient';
-
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Check whether claim already exists
-    SELECT COUNT(*)
-    INTO v_claim_exists
-    FROM Claims
-    WHERE insurance_id = p_insurance_id
-      AND invoice_id = p_invoice_id;
-
-    IF v_claim_exists > 0 THEN
-        SET p_error_message =
-            'Claim already exists for this invoice and insurance';
-
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Calculate insurance claim amount
-    SET v_insurance_amount = v_sub_total;
-
-    -- Insert claim
-    INSERT INTO Claims (
-        insurance_id,
-        invoice_id,
-        issued_date
-    )
-    VALUES (
-        p_insurance_id,
-        p_invoice_id,
-        CURRENT_DATE
-    );
-
-    -- Update invoice
-    UPDATE Invoice
-    SET insurance_claimed_amount = v_insurance_amount
-    WHERE Invoice_id = p_invoice_id;
-
-    SET p_success = TRUE;
-    SET p_error_message = 'Claim added successfully';
-
-    COMMIT;
-
-END proc_label //
-
-DELIMITER ;
---...................................................................................................................................
--- Procedure: GetStaffByBranch
-DELIMITER //
-
-CREATE PROCEDURE GetStaffByBranch(
-    IN p_branch_name VARCHAR(100),
-    IN p_role VARCHAR(50),
-    IN p_active_only BOOLEAN,
-    IN p_limit INT,
-    IN p_offset INT
-)
-proc_label: BEGIN
-
-    DECLARE v_branch_id INT;
-    DECLARE v_total_count INT DEFAULT 0;
-
-    -- Find branch
-    SELECT branch_id
-    INTO v_branch_id
-    FROM Branch
-    WHERE branch_name = TRIM(p_branch_name)
-    LIMIT 1;
-
-    -- Check branch
-    IF v_branch_id IS NULL THEN
-
-        SELECT
-            FALSE AS success,
-            'Branch not found' AS error_message,
-            0 AS total_count;
-
-        LEAVE proc_label;
-    END IF;
-
-    -- Count staff
-    SELECT COUNT(*)
-    INTO v_total_count
-    FROM Employee e
-    JOIN User u
-        ON e.user_id = u.user_id
-    WHERE e.branch_id = v_branch_id
-      AND (p_role IS NULL OR p_role = '' OR e.role = p_role)
-      AND (
-            COALESCE(p_active_only, FALSE) = FALSE
-            OR e.status = 'Active'
-        )
-
-    -- Return staff
-    SELECT
-        TRUE AS success,
-        'Staff retrieved successfully' AS message,
-        v_total_count AS total_count,
-
-        e.employee_id,
-        e.branch_id,
-        e.role,
-        e.salary,
-        e.joined_date,
-        e.status,
-
-        u.user_id,
-        u.full_name,
-        u.NIC,
-        u.gender,
-        u.DOB,
-        u.email,
-        u.contact_no,
-
-        b.branch_name,
-
-        a.address_line_1,
-        a.address_line_2,
-        a.city,
-        a.province,
-        a.postal_code
-
-    FROM Employee e
-
-    JOIN User u ON e.user_id = u.user_id
-
-    JOIN Branch b ON e.branch_id = b.branch_id
-
-    LEFT JOIN Address a ON u.address_id = a.address_id
-
-    WHERE e.branch_id = v_branch_id
-
-      AND (
-            p_role IS NULL
-            OR p_role = ''
-            OR e.role = p_role
-          )
-
-      AND (
-            COALESCE(p_active_only, FALSE) = FALSE
-            OR e.status = 'Active'
-        )
-
-    ORDER BY u.full_name
-
-    LIMIT p_limit OFFSET p_offset;
-
-END proc_label //
-
-DELIMITER ;
-
---...................................................................................................................................
--- Procedure: UpdateStaffSalary
-DELIMITER //
-
-CREATE PROCEDURE UpdateStaffSalary(
-    IN p_employee_id INT,
-    IN p_new_salary DECIMAL(10,2),
-
-    OUT p_error_message VARCHAR(255),
-    OUT p_success BOOLEAN
-)
-proc_label: BEGIN
-
-    DECLARE v_employee_exists INT DEFAULT 0;
-    DECLARE v_current_salary DECIMAL(10,2) DEFAULT 0.00;
-
-    -- Error handler
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        GET DIAGNOSTICS CONDITION 1
-            p_error_message = MESSAGE_TEXT;
-
-        ROLLBACK;
-        SET p_success = FALSE;
-    END;
-
-    -- Initialize output values
-    SET p_success = FALSE;
-    SET p_error_message = NULL;
-
-    -- Start transaction
-    START TRANSACTION;
-
-    -- Validate salary
-    IF p_new_salary IS NULL THEN
-        SET p_error_message = 'New salary is required';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    IF p_new_salary < 0 THEN
-        SET p_error_message = 'Salary cannot be negative';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Check employee
-    SELECT COUNT(*), COALESCE(MAX(salary), 0.00)
-    INTO v_employee_exists, v_current_salary
-    FROM Employee
-    WHERE employee_id = p_employee_id;
-
-    IF v_employee_exists = 0 THEN
-        SET p_error_message = 'Employee does not exist';
-        ROLLBACK;
-        LEAVE proc_label;
-    END IF;
-
-    -- Update salary
-    UPDATE Employee
-    SET salary = p_new_salary
-    WHERE employee_id = p_employee_id;
-
-    -- Success
-    SET p_success = TRUE;
-    SET p_error_message = 'Staff salary updated successfully';
-
-    COMMIT;
-
-END proc_label //
-
-DELIMITER ;
-
---...................................................................................................................................
--- Procedure: DeactiveStaff
-
-DELIMITER //
+END proc_label$$
 
 CREATE PROCEDURE DeactivateStaff(
     IN p_employee_id INT,
@@ -1463,16 +447,7 @@ proc_label: BEGIN
 
     COMMIT;
 
-END proc_label //
-
-DELIMITER ;
-
---...............................................................................................................................
---Procedure : Register Employee
-
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS RegisterEmployee//
+END proc_label$$
 
 CREATE PROCEDURE RegisterEmployee(
     IN p_address_line_1 VARCHAR(150),
@@ -1611,16 +586,7 @@ BEGIN
 
     END IF;
 
-END//
-
-DELIMITER ;
-
---...............................................................................................................................
---Procedure : Register Doctor
-
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS RegisterDoctor//
+END$$
 
 CREATE PROCEDURE RegisterDoctor(
     IN p_address_line_1 VARCHAR(150),
@@ -1795,203 +761,590 @@ BEGIN
 
     END IF;
 
-END//
-
-DELIMITER ;
-
---...............................................................................................................................
---Procedure : Register Patient
-
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS RegisterPatient//
+END$$
 
 CREATE PROCEDURE RegisterPatient(
-    IN p_address_line_1 VARCHAR(150),
-    IN p_address_line_2 VARCHAR(150),
-    IN p_city VARCHAR(50),
-    IN p_province VARCHAR(50),
-    IN p_postal_code VARCHAR(10),
-
     IN p_registered_branch_id INT,
-    IN p_contact_no VARCHAR(20),
-    IN p_emergency_contact_no VARCHAR(20),
-    IN p_blood_group VARCHAR(5),
     IN p_full_name VARCHAR(100),
-    IN p_allergies TEXT,
-    IN p_chronic_conditions TEXT,
+    IN p_contact_no VARCHAR(20),
+    IN p_DOB DATE,
     IN p_NIC VARCHAR(20),
     IN p_gender VARCHAR(20),
-    IN p_DOB DATE,
-    IN p_email VARCHAR(254),
 
     OUT p_patient_id INT,
     OUT p_success BOOLEAN,
     OUT p_message VARCHAR(255)
 )
 BEGIN
-    DECLARE v_address_id INT;
+    DECLARE v_nic VARCHAR(20);
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
+
         SET p_patient_id = NULL;
         SET p_success = FALSE;
-        SET p_message = 'Patient registration failed due to a database error.';
+        SET p_message = 'Database error during patient registration.';
     END;
 
     SET p_patient_id = NULL;
     SET p_success = FALSE;
     SET p_message = NULL;
 
-    -- Validate email 
-    IF NOT IsValidEmail(p_email) THEN
-        SET p_message = 'Invalid email address.';
-    ELSEIF p_DOB IS NULL THEN
-        SET p_message = 'Date of birth is required.';
-    ELSEIF p_full_name IS NULL OR TRIM(p_full_name) = '' THEN
+    SET v_nic = NULLIF(TRIM(p_NIC), '');
+
+    -- Step 1: Validate patient information
+    IF p_full_name IS NULL
+       OR TRIM(p_full_name) = '' THEN
+
         SET p_message = 'Full name is required.';
+
+    ELSEIF p_DOB IS NULL THEN
+
+        SET p_message = 'Date of birth is required.';
+
+    ELSEIF p_DOB > CURDATE() THEN
+
+        SET p_message = 'Date of birth cannot be in the future.';
+
+    ELSEIF NOT EXISTS (
+        SELECT 1 FROM Branch
+        WHERE branch_id = p_registered_branch_id
+    ) THEN
+
+        SET p_message = 'Invalid branch.';
+
+    ELSEIF v_nic IS NOT NULL AND EXISTS (
+        SELECT 1 FROM Patient
+        WHERE NIC = v_nic
+    ) THEN
+
+        SET p_message = 'Patient with this NIC already exists.';
+
     ELSE
-        -- Check duplicate NIC 
-        IF p_NIC IS NOT NULL AND EXISTS (
-            SELECT 1
-            FROM Patient
-            WHERE NIC = p_NIC
-        ) THEN
-            SET p_message = 'A patient with this NIC already exists.';
-        ELSEIF EXISTS (
-            SELECT 1
-            FROM Patient
-            WHERE email = p_email
-        ) THEN
-            SET p_message = 'A patient with this email already exists.';
-        ELSEIF NOT EXISTS (
-            SELECT 1
-            FROM Branch
-            WHERE branch_id = p_registered_branch_id
-        ) THEN
-            SET p_message = 'Registered branch does not exist.';
-        ELSE
 
-            START TRANSACTION;
+        START TRANSACTION;
 
-            -- Create address 
-            INSERT INTO Address (
-                address_line_1,
-                address_line_2,
-                city,
-                province,
-                postal_code
-            )
-            VALUES (
-                p_address_line_1,
-                p_address_line_2,
-                p_city,
-                p_province,
-                p_postal_code
-            );
+        -- Step 2: Insert patient and calculate age
+        INSERT INTO Patient (
+            registered_branch_id,
+            full_name,
+            contact_no,
+            DOB,
+            age,
+            NIC,
+            gender
+        )
+        VALUES (
+            p_registered_branch_id,
+            TRIM(p_full_name),
+            NULLIF(TRIM(p_contact_no), ''),
+            p_DOB,
+            CalculateAge(p_DOB),
+            v_nic,
+            NULLIF(TRIM(p_gender), '')
+        );
 
-            SET v_address_id = LAST_INSERT_ID();
+        -- Step 3: Retrieve new patient ID
+        SET p_patient_id = LAST_INSERT_ID();
 
-            -- Create patient 
-            INSERT INTO Patient (
-                address_id,
-                registered_branch_id,
-                contact_no,
-                emergency_contact_no,
-                blood_group,
-                full_name,
-                allergies,
-                chronic_conditions,
-                NIC,
-                gender,
-                DOB,
-                email
-            )
-            VALUES (
-                v_address_id,
-                p_registered_branch_id,
-                p_contact_no,
-                p_emergency_contact_no,
-                p_blood_group,
-                p_full_name,
-                p_allergies,
-                p_chronic_conditions,
-                p_NIC,
-                p_gender,
-                p_DOB,
-                p_email
-            );
+        COMMIT;
 
-            SET p_patient_id = LAST_INSERT_ID();
+        SET p_success = TRUE;
+        SET p_message = 'Patient registered successfully.';
 
-            COMMIT;
-
-            SET p_success = TRUE;
-            SET p_message = 'Patient registered successfully.';
-
-        END IF;
     END IF;
 
-END//
+END$$
 
-DELIMITER ;
+-- One transaction per operation. MySQL 8.0, database selected in caller.
+-- The old CreateConsultationWithDetails/GenerateInvoice procedures must not be called
+-- by your frontend after switching to this workflow.
 
---...............................................................................................................................
---Procedure : Authenticate User
+CREATE PROCEDURE MarkAppointmentCompleted(
+    IN p_appointment_id INT, IN p_doctor_employee_id INT,
+    OUT p_success BOOLEAN, OUT p_message VARCHAR(255)
+)
+proc: BEGIN
+    DECLARE v_doctor_employee_id INT DEFAULT NULL;
+    DECLARE v_status VARCHAR(50) DEFAULT NULL;
+    DECLARE v_branch_id INT DEFAULT NULL;
+    DECLARE v_active INT DEFAULT 0;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message = MESSAGE_TEXT;
+        ROLLBACK; SET p_success = FALSE;
+    END;
+    SET p_success = FALSE; SET p_message = NULL;
+    START TRANSACTION;
+    SELECT d.employee_id, a.status, ts.branch_id
+      INTO v_doctor_employee_id, v_status, v_branch_id
+    FROM Appointment a JOIN Time_Slot ts ON a.time_slot_id=ts.time_slot_id
+    JOIN Doctor d ON d.doctor_id=ts.doctor_id
+    WHERE a.appointment_id=p_appointment_id FOR UPDATE;
+    SELECT COUNT(*) INTO v_active FROM Employee e
+      WHERE e.employee_id=p_doctor_employee_id AND e.role='Doctor'
+        AND e.status='Active' AND e.branch_id=v_branch_id;
+    IF v_doctor_employee_id IS NULL OR v_doctor_employee_id <> p_doctor_employee_id
+       OR v_active <> 1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Doctor not authorized for appointment';
+    END IF;
+    IF v_status <> 'Scheduled' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Only Scheduled appointments can be completed';
+    END IF;
+    UPDATE Appointment SET status='Completed', updated_at=CURDATE()
+    WHERE appointment_id=p_appointment_id;
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Appointment completed';
+END$$
 
-DELIMITER //
-
-DROP PROCEDURE IF EXISTS AuthenticateUser//
-
-CREATE PROCEDURE AuthenticateUser(
-    IN p_email VARCHAR(150),
-    IN p_password_hash VARCHAR(255),
-
-    OUT p_user_id INT,
-    OUT p_full_name VARCHAR(100),
+CREATE PROCEDURE FinalizeConsultationBill(
+    IN p_appointment_id INT,
+    IN p_employee_id INT,
+    IN p_chief_complaint TEXT,
+    IN p_symptoms TEXT,
+    IN p_diagnosis TEXT,
+    IN p_medications JSON,
+    IN p_treatments JSON,
+    OUT p_medical_record_id INT,
+    OUT p_invoice_id INT,
+    OUT p_subtotal DECIMAL(12,2),
     OUT p_success BOOLEAN,
     OUT p_message VARCHAR(255)
 )
-BEGIN
-    DECLARE v_stored_password_hash VARCHAR(255);
-
-    SET p_user_id = NULL;
-    SET p_full_name = NULL;
-    SET p_success = FALSE;
-    SET p_message = NULL;
-
-    SELECT
-        user_id,
-        full_name,
-        Password_hash
-    INTO
-        p_user_id,
-        p_full_name,
-        v_stored_password_hash
-    FROM User
-    WHERE email = p_email
-    LIMIT 1;
-
-    IF p_user_id IS NULL THEN
-
-        SET p_success = FALSE;
-        SET p_message = 'Invalid email or password.';
-
-    ELSEIF v_stored_password_hash <> p_password_hash THEN
-
-        SET p_user_id = NULL;
-        SET p_full_name = NULL;
-        SET p_success = FALSE;
-        SET p_message = 'Invalid email or password.';
-
-    ELSE
-
-        SET p_success = TRUE;
-        SET p_message = 'Authentication successful.';
-
+proc: BEGIN
+    DECLARE v_status VARCHAR(50) DEFAULT NULL;
+    DECLARE v_branch INT DEFAULT NULL;
+    DECLARE v_authorized INT DEFAULT 0;
+    DECLARE v_existing INT DEFAULT 0;
+    DECLARE v_i INT DEFAULT 0;
+    DECLARE v_n INT DEFAULT 0;
+    DECLARE v_med_id INT DEFAULT NULL;
+    DECLARE v_t_code INT DEFAULT NULL;
+    DECLARE v_quantity INT;
+    DECLARE v_price DECIMAL(10,2) DEFAULT NULL;
+    DECLARE v_eligible BOOLEAN DEFAULT NULL;
+    DECLARE v_dosage VARCHAR(50);
+    DECLARE v_frequency VARCHAR(50);
+    DECLARE v_duration VARCHAR(50);
+    DECLARE v_instructions TEXT;
+    DECLARE v_raw VARCHAR(100);
+    DECLARE v_med_total DECIMAL(12,2);
+    DECLARE v_treat_total DECIMAL(12,2);
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message=MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_success=FALSE;
+        SET p_medical_record_id=NULL;
+        SET p_invoice_id=NULL;
+        SET p_subtotal=NULL;
+    END;
+    SET p_medical_record_id=NULL; SET p_invoice_id=NULL;
+    SET p_subtotal=NULL; SET p_success=FALSE; SET p_message=NULL;
+    IF p_medications IS NULL OR JSON_TYPE(p_medications)<>'ARRAY'
+       OR p_treatments IS NULL OR JSON_TYPE(p_treatments)<>'ARRAY' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Items must be JSON arrays';
     END IF;
+    IF JSON_LENGTH(p_medications)+JSON_LENGTH(p_treatments)=0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='At least one billable item is required';
+    END IF;
+    IF TRIM(COALESCE(p_chief_complaint,''))=''
+       OR TRIM(COALESCE(p_diagnosis,''))='' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Chief complaint and diagnosis required';
+    END IF;
+    IF JSON_LENGTH(p_medications)>100 OR JSON_LENGTH(p_treatments)>100 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Too many consultation items';
+    END IF;
+    START TRANSACTION;
+    -- Serializes duplicate finalization for the same appointment.
+    SELECT a.status, ts.branch_id INTO v_status, v_branch
+      FROM Appointment a JOIN Time_Slot ts ON a.time_slot_id=ts.time_slot_id
+      WHERE a.appointment_id=p_appointment_id FOR UPDATE;
+    IF v_status IS NULL OR v_status<>'Completed' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Appointment must be Completed';
+    END IF;
+    SELECT COUNT(*) INTO v_authorized FROM Employee e
+      WHERE e.employee_id=p_employee_id AND e.role='Receptionist'
+        AND e.status='Active' AND e.branch_id=v_branch;
+    IF v_authorized<>1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Unauthorized receptionist/branch';
+    END IF;
+    SELECT (SELECT COUNT(*) FROM consultation_record WHERE appointment_id=p_appointment_id)
+         + (SELECT COUNT(*) FROM Invoice WHERE appointment_id=p_appointment_id)
+      INTO v_existing;
+    IF v_existing>0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Consultation or invoice already finalized';
+    END IF;
+    INSERT INTO Medical_record (chief_complaint,symptoms,diagnosis)
+        VALUES (p_chief_complaint,p_symptoms,p_diagnosis);
+    SET p_medical_record_id=LAST_INSERT_ID();
+    -- Medicines. NULL/invalid items are rejected before any partial commit.
+    SET v_n=JSON_LENGTH(p_medications); SET v_i=0;
+    WHILE v_i<v_n DO
+        IF JSON_TYPE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,']')))<>'OBJECT' THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid medication item';
+        END IF;
+        SET v_raw=JSON_UNQUOTE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,'].medication_id')));
+        IF v_raw IS NULL OR v_raw NOT REGEXP '^[1-9][0-9]*$'
+           OR CHAR_LENGTH(v_raw)>10 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid medication ID';
+        END IF;
+        SET v_med_id=CAST(v_raw AS UNSIGNED);
+        SET v_raw=JSON_UNQUOTE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,'].quantity')));
+        IF v_raw IS NULL OR v_raw NOT REGEXP '^[1-9][0-9]*$' OR CHAR_LENGTH(v_raw)>5 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid medication quantity';
+        END IF;
+        SET v_quantity=CAST(v_raw AS UNSIGNED);
+        IF v_quantity>10000 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Medication quantity too large';
+        END IF;
+        SET v_dosage=JSON_UNQUOTE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,'].dosage')));
+        SET v_frequency=JSON_UNQUOTE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,'].frequency')));
+        SET v_duration=JSON_UNQUOTE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,'].duration_days')));
+        SET v_instructions=JSON_UNQUOTE(JSON_EXTRACT(p_medications, CONCAT('$[',v_i,'].instructions')));
+        IF v_dosage IS NULL OR TRIM(v_dosage)='' OR v_frequency IS NULL OR TRIM(v_frequency)=''
+           OR v_duration IS NULL OR v_duration NOT REGEXP '^[1-9][0-9]*$'
+           OR CHAR_LENGTH(v_duration)>5 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Incomplete dosage/frequency/duration';
+        END IF;
+        SET v_price=NULL;
+        SELECT m.price INTO v_price FROM Medication m WHERE m.medication_id=v_med_id;
+        IF v_price IS NULL OR v_price<0 OR v_price*v_quantity>99999999.99 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Medication missing or price invalid';
+        END IF;
+        INSERT INTO Prescription
+            (medical_record_id,medication_id,dosage,frequency,duration_days,instructions,quantity,unit_price)
+            VALUES(p_medical_record_id,v_med_id,v_dosage,v_frequency,v_duration,v_instructions,v_quantity,v_price);
+        SET v_i=v_i+1;
+    END WHILE;
+    -- Treatments. Each array entry is one billable occurrence.
+    SET v_n=JSON_LENGTH(p_treatments); SET v_i=0;
+    WHILE v_i<v_n DO
+        SET v_raw=JSON_UNQUOTE(JSON_EXTRACT(p_treatments,CONCAT('$[',v_i,'].treatment_service_code')));
+        IF v_raw IS NULL OR v_raw NOT REGEXP '^[1-9][0-9]*$' OR CHAR_LENGTH(v_raw)>10 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid treatment code';
+        END IF;
+        SET v_t_code=CAST(v_raw AS UNSIGNED);
+        SET v_price=NULL; SET v_eligible=NULL;
+        SELECT tc.base_price, tc.insurance_eligible INTO v_price,v_eligible
+          FROM Treatment_Catalogue tc WHERE tc.treatment_service_code=v_t_code;
+        IF v_price IS NULL OR v_price<0 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Treatment missing or price invalid';
+        END IF;
+        INSERT INTO Treatment (medical_record_id,treatment_service_code,unit_price,insurance_eligible)
+            VALUES(p_medical_record_id,v_t_code,v_price,COALESCE(v_eligible,FALSE));
+        SET v_i=v_i+1;
+    END WHILE;
+    SET v_med_total=CalculateMedicationTotal(p_medical_record_id);
+    SET v_treat_total=CalculateTreatmentTotal(p_medical_record_id);
+    SET p_subtotal=v_med_total+v_treat_total;
+    IF p_subtotal<=0 OR p_subtotal>99999999.99 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invoice subtotal invalid';
+    END IF;
+    INSERT INTO Invoice (appointment_id,sub_total,insurance_claimed_amount,created_at)
+        VALUES (p_appointment_id,p_subtotal,0.00,CURDATE());
+    SET p_invoice_id=LAST_INSERT_ID();
+    INSERT INTO consultation_record (appointment_id,medical_record_id,invoice_id)
+        VALUES (p_appointment_id,p_medical_record_id,p_invoice_id);
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Consultation and invoice finalized';
+END$$
 
-END//
+-- Replaces old RecordPayment and old claim processing routes/procedures.
+-- All routines use InnoDB transactional tables and a consistent invoice row lock.
+
+CREATE PROCEDURE ApplyInvoiceInsurance(
+    IN p_invoice_id INT, IN p_insurance_id INT, IN p_employee_id INT,
+    OUT p_claim_amount DECIMAL(10,2), OUT p_success BOOLEAN, OUT p_message VARCHAR(255)
+)
+proc: BEGIN
+    DECLARE v_patient_id INT DEFAULT NULL;
+    DECLARE v_branch_id INT DEFAULT NULL;
+    DECLARE v_service_date DATE DEFAULT NULL;
+    DECLARE v_subtotal DECIMAL(10,2) DEFAULT NULL;
+    DECLARE v_auth INT DEFAULT 0;
+    DECLARE v_count INT DEFAULT 0;
+    DECLARE v_copay DECIMAL(10,2) DEFAULT NULL;
+    DECLARE v_eligible DECIMAL(12,2) DEFAULT 0.00;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message = MESSAGE_TEXT;
+        ROLLBACK; SET p_success=FALSE; SET p_claim_amount=NULL;
+    END;
+    SET p_success=FALSE; SET p_claim_amount=NULL; SET p_message=NULL;
+    START TRANSACTION;
+    SELECT a.patient_id, ts.branch_id, ts.available_date, i.sub_total
+      INTO v_patient_id, v_branch_id, v_service_date, v_subtotal
+      FROM Invoice i JOIN Appointment a ON a.appointment_id=i.appointment_id
+      JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+      WHERE i.Invoice_id=p_invoice_id AND a.status='Completed' FOR UPDATE;
+    IF v_patient_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Completed invoice not found';
+    END IF;
+    SELECT COUNT(*) INTO v_auth FROM Employee
+      WHERE employee_id=p_employee_id AND branch_id=v_branch_id
+        AND role='Receptionist' AND status='Active';
+    IF v_auth<>1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Unauthorized receptionist/branch';
+    END IF;
+    IF v_subtotal IS NULL OR v_subtotal<=0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invoice amount invalid';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM Claims WHERE invoice_id=p_invoice_id;
+    IF v_count>0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Insurance already applied to invoice';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM Payment WHERE Invoice_id=p_invoice_id;
+    IF v_count>0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Apply insurance before patient payments';
+    END IF;
+    SELECT ip.copayment_percentage INTO v_copay
+      FROM Insurance ins JOIN Insurance_Packages ip
+        ON ip.insurance_package_id=ins.insurance_package_id
+      WHERE ins.Insurance_id=p_insurance_id AND ins.patient_id=v_patient_id
+        AND ins.status='Active'
+        AND ins.started_date<=v_service_date
+        AND (ins.end_date IS NULL OR ins.end_date>=v_service_date)
+        AND (ip.started_date IS NULL OR ip.started_date<=v_service_date)
+      LIMIT 1;
+    IF v_copay IS NULL OR v_copay<0 OR v_copay>100 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='No eligible active insurance for patient';
+    END IF;
+    SET v_eligible=CalculateEligibleTreatmentTotal(p_invoice_id);
+    IF v_eligible<=0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='No insurance-eligible treatments';
+    END IF;
+    SET p_claim_amount=CaculateInsuranceCoverage(LEAST(v_subtotal,v_eligible),v_copay);
+    IF p_claim_amount IS NULL OR p_claim_amount<=0 OR p_claim_amount>v_subtotal THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Calculated insurance amount invalid';
+    END IF;
+    INSERT INTO Claims(insurance_id,invoice_id,issued_date,claim_amount,
+                       approved_amount,insurance_paid_amount,claim_status)
+    VALUES (p_insurance_id,p_invoice_id,CURDATE(),p_claim_amount,NULL,0.00,'Submitted');
+    UPDATE Invoice SET insurance_claimed_amount=p_claim_amount WHERE Invoice_id=p_invoice_id;
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Insurance claim submitted (provisional)';
+END$$
+
+CREATE PROCEDURE RecordPayment(
+    IN p_invoice_id INT,
+    IN p_employee_id INT,
+    IN p_payment_amount DECIMAL(10,2),
+    IN p_payment_method VARCHAR(20),
+    IN p_request_key VARCHAR(36),
+    OUT p_payment_id INT,
+    OUT p_success BOOLEAN,
+    OUT p_message VARCHAR(255)
+)
+proc: BEGIN
+    DECLARE v_patient_id INT DEFAULT NULL;
+    DECLARE v_branch INT DEFAULT NULL;
+    DECLARE v_status VARCHAR(50) DEFAULT NULL;
+    DECLARE v_auth INT DEFAULT 0;
+    DECLARE v_remaining DECIMAL(12,2) DEFAULT NULL;
+    DECLARE v_existing_id INT DEFAULT NULL;
+    DECLARE v_existing_invoice INT;
+    DECLARE v_existing_amount DECIMAL(10,2);
+    DECLARE v_existing_method VARCHAR(20);
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message=MESSAGE_TEXT;
+        ROLLBACK; SET p_payment_id=NULL; SET p_success=FALSE;
+    END;
+    SET p_payment_id=NULL; SET p_success=FALSE; SET p_message=NULL;
+    IF p_payment_amount IS NULL OR p_payment_amount<=0
+        OR p_payment_method IS NULL OR TRIM(p_payment_method)=''
+        OR p_request_key IS NULL OR CHAR_LENGTH(p_request_key)<>36 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid payment amount/method/request key';
+    END IF;
+    START TRANSACTION;
+    SELECT a.patient_id,ts.branch_id,a.status
+      INTO v_patient_id,v_branch,v_status
+      FROM Invoice i JOIN Appointment a ON a.appointment_id=i.appointment_id
+      JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+      WHERE i.Invoice_id=p_invoice_id FOR UPDATE;
+    IF v_patient_id IS NULL OR v_status<>'Completed' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Completed invoice not found';
+    END IF;
+    SELECT COUNT(*) INTO v_auth FROM Employee e
+    WHERE e.employee_id=p_employee_id AND e.role='Receptionist'
+      AND e.status='Active' AND e.branch_id=v_branch;
+    IF v_auth<>1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Unauthorized receptionist/branch';
+    END IF;
+    -- Safe payment retry: same request_key, same amount/method/invoice -> same payment ID.
+    SELECT payment_id,Invoice_id,payment_amount,payment_method
+      INTO v_existing_id,v_existing_invoice,v_existing_amount,v_existing_method
+      FROM Payment WHERE request_key=p_request_key LIMIT 1;
+    IF v_existing_id IS NOT NULL THEN
+        IF v_existing_invoice<>p_invoice_id OR v_existing_amount<>p_payment_amount
+           OR v_existing_method<>p_payment_method THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Payment request key reused for different details';
+        END IF;
+        SET p_payment_id=v_existing_id;
+        COMMIT;
+        SET p_success=TRUE; SET p_message='Previous payment returned (idempotent retry)';
+        LEAVE proc;
+    END IF;
+    SET v_remaining=CalculateOutstandingBalance(p_invoice_id);
+    IF v_remaining IS NULL OR v_remaining<=0 OR p_payment_amount>v_remaining THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Payment exceeds patient outstanding balance';
+    END IF;
+    INSERT INTO Payment (Invoice_id,patient_id,payment_method,status,payment_date,
+                         payment_amount,request_key)
+    VALUES (p_invoice_id,v_patient_id,p_payment_method,'Completed',CURDATE(),
+            p_payment_amount,p_request_key);
+    SET p_payment_id=LAST_INSERT_ID();
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Payment recorded successfully';
+END$$
+
+CREATE PROCEDURE ResolveInsuranceClaim(
+    IN p_invoice_id INT, IN p_manager_employee_id INT,
+    IN p_approved_amount DECIMAL(10,2),
+    OUT p_success BOOLEAN, OUT p_message VARCHAR(255)
+)
+proc: BEGIN
+    DECLARE v_branch INT DEFAULT NULL;
+    DECLARE v_auth INT DEFAULT 0;
+    DECLARE v_claimed DECIMAL(10,2) DEFAULT NULL;
+    DECLARE v_status VARCHAR(20) DEFAULT NULL;
+    DECLARE v_paid DECIMAL(10,2) DEFAULT NULL;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message=MESSAGE_TEXT;
+        ROLLBACK; SET p_success=FALSE;
+    END;
+    SET p_success=FALSE; SET p_message=NULL;
+    START TRANSACTION;
+    SELECT ts.branch_id INTO v_branch
+      FROM Invoice i JOIN Appointment a ON a.appointment_id=i.appointment_id
+      JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+      WHERE i.Invoice_id=p_invoice_id FOR UPDATE;
+    IF v_branch IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invoice not found';
+    END IF;
+    SELECT COUNT(*) INTO v_auth FROM Employee e
+      WHERE e.employee_id=p_manager_employee_id AND e.branch_id=v_branch
+        AND e.role='Manager' AND e.status='Active';
+    IF v_auth<>1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Manager unauthorized';
+    END IF;
+    SELECT c.claim_amount,c.claim_status,c.insurance_paid_amount
+      INTO v_claimed,v_status,v_paid
+      FROM Claims c WHERE c.invoice_id=p_invoice_id FOR UPDATE;
+    IF v_status IS NULL OR v_status<>'Submitted' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Claim not pending';
+    END IF;
+    IF p_approved_amount IS NULL OR p_approved_amount<0 OR p_approved_amount>v_claimed THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invalid approved amount';
+    END IF;
+    UPDATE Claims SET approved_amount=p_approved_amount,
+       claim_status=CASE WHEN p_approved_amount=0 THEN 'Rejected'
+                         WHEN p_approved_amount<v_claimed THEN 'PartiallyApproved'
+                         ELSE 'Approved' END
+     WHERE invoice_id=p_invoice_id;
+    -- Claim allocation is provisionally applied when Submitted. Once adjudicated,
+    -- use the approved share (if rejected, the patient owes the difference).
+    UPDATE Invoice SET insurance_claimed_amount=p_approved_amount
+      WHERE Invoice_id=p_invoice_id;
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Insurance claim decision recorded';
+END$$
+
+-- Optional demonstration of an insurer reimbursement. Does NOT insert patient Payment.
+
+CREATE PROCEDURE RecordInsuranceSettlement(
+    IN p_invoice_id INT, IN p_manager_employee_id INT,
+    IN p_amount DECIMAL(10,2),
+    OUT p_success BOOLEAN, OUT p_message VARCHAR(255)
+)
+proc: BEGIN
+    DECLARE v_branch INT DEFAULT NULL;
+    DECLARE v_auth INT DEFAULT 0;
+    DECLARE v_approved DECIMAL(10,2) DEFAULT NULL;
+    DECLARE v_paid DECIMAL(10,2) DEFAULT NULL;
+    DECLARE v_status VARCHAR(20) DEFAULT NULL;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message=MESSAGE_TEXT;
+        ROLLBACK; SET p_success=FALSE;
+    END;
+    SET p_success=FALSE; SET p_message=NULL;
+    IF p_amount IS NULL OR p_amount<=0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Settlement amount must be positive';
+    END IF;
+    START TRANSACTION;
+    SELECT ts.branch_id INTO v_branch
+      FROM Invoice i JOIN Appointment a ON a.appointment_id=i.appointment_id
+      JOIN Time_Slot ts ON ts.time_slot_id=a.time_slot_id
+      WHERE i.Invoice_id=p_invoice_id FOR UPDATE;
+    IF v_branch IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Invoice not found';
+    END IF;
+    SELECT COUNT(*) INTO v_auth FROM Employee
+      WHERE employee_id=p_manager_employee_id AND branch_id=v_branch
+        AND role='Manager' AND status='Active';
+    IF v_auth<>1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Manager unauthorized';
+    END IF;
+    SELECT approved_amount,insurance_paid_amount,claim_status
+      INTO v_approved,v_paid,v_status FROM Claims WHERE invoice_id=p_invoice_id FOR UPDATE;
+    IF v_approved IS NULL OR v_approved<=0
+       OR v_status NOT IN ('Approved','PartiallyApproved','PartiallyPaid') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Insurance claim not approved';
+    END IF;
+    IF v_paid+p_amount>v_approved THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Settlement exceeds approved amount';
+    END IF;
+    UPDATE Claims SET insurance_paid_amount=v_paid+p_amount,
+      claim_status=CASE WHEN v_paid+p_amount=v_approved
+                        THEN 'Paid' ELSE 'PartiallyPaid' END
+      WHERE invoice_id=p_invoice_id;
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Insurer settlement recorded';
+END$$
+
+-- Replacement for your existing AddMedication: adds the required price input.
+
+CREATE PROCEDURE AddMedication(
+    IN p_generic_name VARCHAR(100),
+    IN p_manufacturer VARCHAR(100),
+    IN p_form VARCHAR(50),
+    IN p_contraindications VARCHAR(255),
+    IN p_side_effects VARCHAR(255),
+    IN p_price DECIMAL(10,2),
+    OUT p_medication_id INT,
+    OUT p_message VARCHAR(255),
+    OUT p_success BOOLEAN
+)
+proc: BEGIN
+    DECLARE v_exists INT DEFAULT 0;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 p_message = MESSAGE_TEXT;
+        ROLLBACK; SET p_medication_id=NULL; SET p_success=FALSE;
+    END;
+    SET p_medication_id=NULL; SET p_message=NULL; SET p_success=FALSE;
+    IF p_generic_name IS NULL OR TRIM(p_generic_name)='' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Generic name is required';
+    END IF;
+    IF p_price IS NULL OR p_price<0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Medication price is required';
+    END IF;
+    START TRANSACTION;
+    SELECT COUNT(*) INTO v_exists FROM Medication
+     WHERE generic_name=p_generic_name
+       AND manufacturer <=> p_manufacturer AND form <=> p_form;
+    IF v_exists>0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Medication already exists';
+    END IF;
+    INSERT INTO Medication (generic_name,manufacturer,form,contraindications,side_effects,price)
+    VALUES(p_generic_name,p_manufacturer,p_form,p_contraindications,p_side_effects,p_price);
+    SET p_medication_id=LAST_INSERT_ID();
+    COMMIT;
+    SET p_success=TRUE; SET p_message='Medication added successfully';
+END$$
 
 DELIMITER ;

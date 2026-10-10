@@ -59,19 +59,13 @@ CREATE TABLE Doctor (
 -- 6. Patient Table
 CREATE TABLE Patient (
     patient_id INT AUTO_INCREMENT PRIMARY KEY,
-    address_id INT,
     registered_branch_id INT,
     contact_no VARCHAR(20),
-    emergency_contact_no VARCHAR(20),
-    blood_group VARCHAR(5),
     full_name VARCHAR(100),
-    allergies TEXT,
-    chronic_conditions TEXT,
     NIC VARCHAR(20),
     gender VARCHAR(20),
     DOB DATE,
-    email VARCHAR(254),
-    FOREIGN KEY (address_id) REFERENCES Address(address_id),
+    age SMALLINT UNSIGNED,
     FOREIGN KEY (registered_branch_id) REFERENCES Branch(branch_id)
 );
 

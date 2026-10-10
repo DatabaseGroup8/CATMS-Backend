@@ -76,52 +76,146 @@ def search_patients(request):
             
     return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
 
+
+
 @csrf_exempt
 @require_POST
 @jwt_required(allowed_roles=['Receptionist'])
 def quick_register_patient(request):
+
+    branch_id = getattr(request, 'branch_id', None)
+
+    if branch_id is None:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Branch context missing.'
+        }, status=403)
+
     try:
         data = json.loads(request.body)
-        
-        # Extract the active branch from the frontend header
-        branch_id = request.headers.get('X-Branch-ID')
-        if not branch_id:
-            return JsonResponse({'status': 'error', 'message': 'Branch context missing.'}, status=401)
-        
-        # Extract matching your exact schema
-        full_name = data.get('full_name', '').strip()
-        contact_no = data.get('contact_no', '').strip()
-        dob = data.get('DOB')  # Expected format: 'YYYY-MM-DD'
-        nic = data.get('NIC', '').strip()
-        gender = data.get('gender', '').strip()
-        
+
+        if not isinstance(data, dict):
+            raise ValueError('Expected a JSON object.')
+
+        def get_text(field):
+            value = data.get(field)
+
+            if value is None:
+                return None
+
+            if not isinstance(value, str):
+                raise ValueError(f'{field} must be a string.')
+
+            return value.strip() or None
+
+        full_name = get_text('full_name')
+        contact_no = get_text('contact_no')
+        nic = get_text('NIC')
+        gender = get_text('gender')
+        dob_string = data.get('DOB')
+
         if not full_name:
-            return JsonResponse({'status': 'error', 'message': 'Full name is required.'}, status=400)
-            
+            raise ValueError('Full name is required.')
+
+        if len(full_name) > 100:
+            raise ValueError('Full name is too long.')
+
+        for value, limit, field in [
+            (contact_no, 20, 'contact_no'),
+            (nic, 20, 'NIC'),
+            (gender, 20, 'gender')
+        ]:
+            if value is not None and len(value) > limit:
+                raise ValueError(f'{field} is too long.')
+
+        if not isinstance(dob_string, str) or not dob_string:
+            raise ValueError('Date of birth is required.')
+
+        try:
+            dob = date.fromisoformat(dob_string)
+        except ValueError:
+            raise ValueError('DOB must be YYYY-MM-DD.')
+
+        if dob > date.today():
+            raise ValueError(
+                'Date of birth cannot be in the future.'
+            )
+
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=400)
+
+    try:
         with connection.cursor() as cursor:
-            # Insert using your exact column names
+
+            # Call RegisterPatient stored procedure
             cursor.execute("""
-                INSERT INTO Patient (full_name, contact_no, DOB, NIC, gender, registered_branch_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, [full_name, contact_no, dob, nic, gender, branch_id])
-            
-            cursor.execute("SELECT LAST_INSERT_ID();")
-            new_patient_id = cursor.fetchone()[0]
-            
+                CALL RegisterPatient(
+                    %s, %s, %s, %s, %s, %s,
+                    @patient_id,
+                    @success,
+                    @message
+                )
+            """, [
+                branch_id,
+                full_name,
+                contact_no,
+                dob,
+                nic,
+                gender
+            ])
+
+            while cursor.nextset():
+                pass
+
+            # Retrieve procedure outputs
+            cursor.execute("""
+                SELECT @patient_id, @success, @message
+            """)
+
+            patient_id, success, message = cursor.fetchone()
+
+            if not success:
+                return JsonResponse({
+                    'status': 'error',
+                    'message': message
+                }, status=400)
+
+            # Calculate current age using the SQL function
+            cursor.execute("""
+                SELECT CalculateAge(DOB)
+                FROM Patient
+                WHERE patient_id = %s
+            """, [patient_id])
+
+            result = cursor.fetchone()
+            age = result[0] if result else None
+
         return JsonResponse({
             'status': 'success',
+            'message': message,
             'data': {
-                'patient_id': new_patient_id,
+                'patient_id': patient_id,
                 'full_name': full_name,
                 'contact_no': contact_no,
-                'DOB': dob
+                'DOB': dob.isoformat(),
+                'age': age,
+                'NIC': nic,
+                'gender': gender,
+                'registered_branch_id': branch_id
             }
         }, status=201)
 
-    except json.JSONDecodeError:
-        return JsonResponse({'status': 'error', 'message': 'Invalid JSON.'}, status=400)
-    except Exception as e:
-        return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
+    except DatabaseError:
+        logger.exception('Quick patient registration failed')
+
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Unable to register patient.'
+        }, status=500)
+
 
 @csrf_exempt
 @jwt_required(allowed_roles=['Receptionist', 'Doctor'])
@@ -352,79 +446,68 @@ def book_appointment(request):
     
     
 
-@require_GET
 @jwt_required(allowed_roles=['Receptionist', 'Doctor'])
+@require_GET
 def get_daily_schedule(request):
-    """
-    Retrieves the doctor schedule (time slots) for a specific date and branch.
-    Expects an optional query parameter: ?date=YYYY-MM-DD (defaults to today).
-    """
+    """Show sessions by branch/date. Capacity is NOT modeled in current schema."""
     try:
-        target_date_str = request.GET.get('date')
-        target_date = date.fromisoformat(target_date_str) if target_date_str else date.today()
-
-        branch_id = request.headers.get('X-Branch-ID')
-        if not branch_id:
-            return JsonResponse({'status': 'error', 'message': 'X-Branch-ID header is required.'}, status=400)
-
+        raw_date = request.GET.get('date')
+        selected_date = date.fromisoformat(raw_date) if raw_date else date.today()
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+        if branch_id <= 0 or employee_id <= 0:
+            raise ValueError('Invalid JWT context')
+    except (ValueError, TypeError, AttributeError):
+        return JsonResponse({'status': 'error', 'message': 'Invalid date or employee context'}, status=400)
+    # Doctors only see their own schedule; receptionists see all branch doctors.
+    doctor_only = request.user_role == 'Doctor'
+    try:
         with connection.cursor() as cursor:
             cursor.execute("""
-                SELECT 
-                    ts.time_slot_id,
-                    u.full_name AS doctor_name,
-                    e.role AS specialty, 
-                    ts.available_date,
-                    ts.start_time,
-                    ts.end_time,
-                    ts.current_patients,
-                    ts.max_patients
+                SELECT ts.time_slot_id, u.full_name,
+                       COALESCE(spec.specializations, 'Not assigned'),
+                       ts.available_date, ts.start_time, ts.end_time,
+                       COALESCE(booked.current_patients, 0), ts.is_booked
                 FROM Time_Slot ts
-                JOIN Doctor d ON ts.doctor_id = d.doctor_id
-                JOIN Employee e ON d.employee_id = e.employee_id
-                JOIN User u ON e.user_id = u.user_id
-                WHERE ts.available_date = %s 
-                  AND e.branch_id = %s
-                ORDER BY ts.start_time ASC;
-            """, [target_date, branch_id])
-            
+                JOIN Doctor d ON d.doctor_id = ts.doctor_id
+                JOIN Employee e ON e.employee_id = d.employee_id
+                JOIN `User` u ON u.user_id = e.user_id
+                LEFT JOIN (
+                    SELECT ds.doctor_id,
+                           GROUP_CONCAT(s.specialization_name ORDER BY s.specialization_name SEPARATOR ', ')
+                           AS specializations
+                    FROM Doctor_Specialization ds
+                    JOIN Specialization s ON s.specialization_id = ds.specialization_id
+                    GROUP BY ds.doctor_id
+                ) spec ON spec.doctor_id = d.doctor_id
+                LEFT JOIN (
+                    SELECT time_slot_id, COUNT(*) AS current_patients
+                    FROM Appointment WHERE status = 'Scheduled'
+                    GROUP BY time_slot_id
+                ) booked ON booked.time_slot_id = ts.time_slot_id
+                WHERE ts.available_date = %s AND ts.branch_id = %s
+                  AND e.branch_id = ts.branch_id AND e.status = 'Active'
+                  AND EXISTS (
+                      SELECT 1 FROM Employee actor
+                      WHERE actor.employee_id = %s AND actor.branch_id = ts.branch_id
+                        AND actor.status = 'Active' AND actor.role = %s
+                  )
+                  AND (%s = 0 OR e.employee_id = %s)
+                ORDER BY ts.start_time, u.full_name
+            """, [selected_date, branch_id, employee_id, request.user_role,
+                    int(doctor_only), employee_id])
             rows = cursor.fetchall()
-            columns = [col[0] for col in cursor.description]
-
-        schedule_list = []
-        for row in rows:
-            slot_data = dict(zip(columns, row))
-            
-            current_count = slot_data['current_patients'] or 0
-            max_count = slot_data['max_patients'] or 0
-            
-            # Dynamic capacity logic
-            status = "Available" if current_count < max_count else "Fully Booked"
-
-            schedule_list.append({
-                'time_slot_id': slot_data['time_slot_id'],
-                'doctor_name': slot_data['doctor_name'],
-                'specialty': slot_data['specialty'],
-                'date': slot_data['available_date'].strftime('%Y-%m-%d') if slot_data['available_date'] else None,
-                'start_time': str(slot_data['start_time']), 
-                'end_time': str(slot_data['end_time']),
-                'current_patients': current_count,
-                'max_patients': max_count,
-                'status': status
-            })
-
-        return JsonResponse({
-            'status': 'success',
-            'date': target_date.strftime('%Y-%m-%d'),
-            'branch_id': int(branch_id),
-            'count': len(schedule_list),
-            'data': schedule_list
-        }, status=200)
-
-    except ValueError:
-        return JsonResponse({'status': 'error', 'message': 'Invalid date format. Use YYYY-MM-DD.'}, status=400)
     except DatabaseError:
-        logger.exception("Database error in get_daily_schedule")
-        return JsonResponse({'status': 'critical_error', 'message': 'Unable to retrieve schedule.'}, status=500)
-    except Exception as e:
-        logger.exception("Unexpected error in get_daily_schedule")
-        return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
+        logger.exception('Unable to fetch schedule')
+        return JsonResponse({'status':'error','message':'Unable to retrieve schedule'}, status=500)
+    data = []
+    for r in rows:
+        # No capacity field exists, so don't report Fully Booked based on an invented limit.
+        data.append({
+            'time_slot_id': r[0], 'doctor_name': r[1], 'specialty': r[2],
+            'date': str(r[3]), 'start_time': str(r[4]), 'end_time': str(r[5]),
+            'current_patients': r[6], 'max_patients': None,
+            'status': 'Closed' if r[7] else 'Open',
+        })
+    return JsonResponse({'status':'success','date':str(selected_date),
+                         'branch_id':branch_id, 'count':len(data), 'data': data})
