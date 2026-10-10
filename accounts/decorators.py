@@ -1,6 +1,7 @@
 import jwt
 from django.conf import settings
 from django.http import JsonResponse
+from django.db import connection, DatabaseError
 from functools import wraps
 
 def jwt_required(allowed_roles=None):
@@ -31,6 +32,33 @@ def jwt_required(allowed_roles=None):
                 return JsonResponse({'error': 'Token has expired. Please log in again.'}, status=401)
             except jwt.InvalidTokenError:
                 return JsonResponse({'error': 'Invalid token'}, status=401)
+            
+            
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT 1
+                        FROM Employee
+                        WHERE employee_id = %s
+                          AND branch_id = %s
+                          AND role = %s
+                          AND status = 'Active'
+                    """, [
+                        request.employee_id,
+                        request.branch_id,
+                        request.user_role
+                    ])
+
+                    if cursor.fetchone() is None:
+                        return JsonResponse({
+                            'error': 'Employee access revoked'
+                        }, status=403)
+
+            except DatabaseError:
+                return JsonResponse({
+                    'error': 'Authentication service unavailable'
+                }, status=503)
+
                 
             return view_func(request, *args, **kwargs)
         return _wrapped_view

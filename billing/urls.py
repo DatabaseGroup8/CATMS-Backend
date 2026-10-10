@@ -1,6 +1,7 @@
 """REPLACE existing billing/urls.py with this complete file."""
 from django.urls import path
 from . import workflow_views as views
+from . import list_views
 from . import insurance_admin_views as admin_views
 
 urlpatterns = [
@@ -25,4 +26,14 @@ urlpatterns = [
     # Optionally preserve the old balance-only route, using the safe summary view:
     path('balance/<int:invoice_id>/', views.get_outstanding_balance_compat,
          name='outstanding_balance'),
+    
+    path('invoices/', list_views.list_invoices, name='list_invoices'),
+    
+    path('insurance/packages/list/',
+     list_views.list_insurance_packages,
+     name='list_insurance_packages'),
+    
+    path('insurance/claims/',
+     list_views.list_insurance_claims,
+     name='list_insurance_claims'),
 ]
