@@ -122,14 +122,16 @@ CREATE TABLE Doctor_Specialization (
 -- 12. Time_Slot Table
 CREATE TABLE Time_Slot (
     time_slot_id INT AUTO_INCREMENT PRIMARY KEY,
-    doctor_id INT,
-    branch_id INT,
-    available_date DATE,
-    is_booked BOOLEAN DEFAULT FALSE,
-    start_time TIME,
-    end_time TIME,
+    doctor_id INT NOT NULL,
+    branch_id INT NOT NULL,
+    available_date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    available BOOLEAN NOT NULL DEFAULT TRUE,
     FOREIGN KEY (doctor_id) REFERENCES Doctor(doctor_id),
-    FOREIGN KEY (branch_id) REFERENCES Branch(branch_id)
+    FOREIGN KEY (branch_id) REFERENCES Branch(branch_id),
+    CONSTRAINT chk_slot_time CHECK (end_time > start_time),
+    INDEX idx_slot_doctor_date (doctor_id, available_date)
 ) ENGINE=InnoDB;
 
 
