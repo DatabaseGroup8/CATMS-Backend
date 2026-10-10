@@ -6,44 +6,71 @@
 DELIMITER $$
 
 CREATE PROCEDURE AddTimeSlot(
-    IN p_doctor_id INT, IN p_branch_id INT, IN p_available_date DATE,
-    IN p_start_time TIME, IN p_end_time TIME,
-    OUT p_time_slot_id INT, OUT p_error_message VARCHAR(255), OUT p_success BOOLEAN
+    IN p_doctor_id INT,
+    IN p_branch_id INT,
+    IN p_available_date DATE,
+    IN p_start_time TIME,
+    IN p_end_time TIME,
+    IN p_available BOOLEAN,
+    OUT p_time_slot_id INT,
+    OUT p_error_message VARCHAR(255),
+    OUT p_success BOOLEAN
 )
 proc_label: BEGIN
     DECLARE v_employee_id INT DEFAULT NULL;
     DECLARE v_count INT DEFAULT 0;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
-        GET DIAGNOSTICS CONDITION 1 p_error_message=MESSAGE_TEXT;
-        ROLLBACK; SET p_time_slot_id=NULL; SET p_success=FALSE;
+        GET DIAGNOSTICS CONDITION 1 p_error_message = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_time_slot_id = NULL;
+        SET p_success = FALSE;
     END;
-    SET p_time_slot_id=NULL; SET p_error_message=NULL; SET p_success=FALSE;
-    IF p_doctor_id IS NULL OR p_branch_id IS NULL OR p_available_date IS NULL
-       OR p_start_time IS NULL OR p_end_time IS NULL OR p_end_time<=p_start_time
-       OR p_available_date<CURDATE() THEN
-        SET p_error_message='Invalid doctor, branch, date or time range';
+    SET p_time_slot_id = NULL;
+    SET p_error_message = NULL;
+    SET p_success = FALSE;
+    IF p_doctor_id IS NULL OR p_branch_id IS NULL
+       OR p_available_date IS NULL OR p_available_date < CURDATE()
+       OR p_start_time IS NULL OR p_end_time IS NULL
+       OR p_end_time <= p_start_time OR p_available IS NULL
+       OR p_available NOT IN (0, 1) THEN
+        SET p_error_message = 'Invalid slot details';
         LEAVE proc_label;
     END IF;
     START TRANSACTION;
-    -- Lock employee for concurrent slot creation by this doctor.
+    -- Serializes scheduling requests that use this same procedure.
     SELECT d.employee_id INTO v_employee_id
-      FROM Doctor d JOIN Employee e ON e.employee_id=d.employee_id
-      WHERE d.doctor_id=p_doctor_id AND e.branch_id=p_branch_id
-        AND e.role='Doctor' AND e.status='Active' FOR UPDATE;
+      FROM Doctor d
+      JOIN Employee e ON e.employee_id = d.employee_id
+      WHERE d.doctor_id = p_doctor_id
+        AND e.branch_id = p_branch_id
+        AND e.role = 'Doctor' AND e.status = 'Active'
+      FOR UPDATE;
     IF v_employee_id IS NULL THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Doctor not active at selected branch';
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Doctor not active in branch';
     END IF;
-    SELECT COUNT(*) INTO v_count FROM Time_Slot ts
-      WHERE ts.doctor_id=p_doctor_id AND ts.available_date=p_available_date
-        AND ts.start_time<p_end_time AND ts.end_time>p_start_time;
-    IF v_count>0 THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Overlapping doctor time slot';
+    SELECT COUNT(*) INTO v_count
+      FROM Time_Slot ts
+      WHERE ts.doctor_id = p_doctor_id
+        AND ts.available_date = p_available_date
+        AND ts.start_time < p_end_time
+        AND ts.end_time > p_start_time;
+    IF v_count > 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Overlapping doctor time slot';
     END IF;
-    INSERT INTO Time_Slot(doctor_id,branch_id,available_date,is_booked,start_time,end_time)
-    VALUES(p_doctor_id,p_branch_id,p_available_date,FALSE,p_start_time,p_end_time);
-    SET p_time_slot_id=LAST_INSERT_ID();
-    COMMIT; SET p_success=TRUE; SET p_error_message='Time slot added successfully';
+    INSERT INTO Time_Slot (
+      doctor_id, branch_id, available_date,
+      start_time, end_time, available
+    ) VALUES (
+      p_doctor_id, p_branch_id, p_available_date,
+      p_start_time, p_end_time, p_available
+    );
+    SET p_time_slot_id = LAST_INSERT_ID();
+    COMMIT;
+    SET p_success = TRUE;
+    SET p_error_message = 'Slot created';
 END$$
 
 CREATE PROCEDURE GetStaffByBranch(
