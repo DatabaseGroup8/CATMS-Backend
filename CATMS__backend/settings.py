@@ -118,9 +118,33 @@ WSGI_APPLICATION = 'CATMS__backend.wsgi.application'
 # Database configuration for local MySQL
 # and future Aiven deployment.
 
+# DB_SSL_REQUIRED = (
+#     os.getenv("DB_SSL_REQUIRED", "False").lower()
+#     == "true"
+# )
+
+# db_options = {
+#     "charset": "utf8mb4",
+# }
+
+# if DB_SSL_REQUIRED:
+#     db_options["ssl"] = {
+#         "ssl_mode": "REQUIRED"
+#     }
+
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.mysql",
+#         "NAME": os.getenv("DB_NAME", "catms_local"),
+#         "USER": os.getenv("DB_USER", "catms_app"),
+#         "PASSWORD": os.getenv("DB_PASSWORD", ""),
+#         "HOST": os.getenv("DB_HOST", "127.0.0.1"),
+#         "PORT": int(os.getenv("DB_PORT", "3306")),
+#         "OPTIONS": db_options,
+#     }
+# }
 DB_SSL_REQUIRED = (
-    os.getenv("DB_SSL_REQUIRED", "False").lower()
-    == "true"
+    os.getenv("DB_SSL_REQUIRED", "False").lower() == "true"
 )
 
 db_options = {
@@ -128,9 +152,7 @@ db_options = {
 }
 
 if DB_SSL_REQUIRED:
-    db_options["ssl"] = {
-        "ssl_mode": "REQUIRED"
-    }
+    db_options["ssl_mode"] = "REQUIRED"
 
 DATABASES = {
     "default": {
