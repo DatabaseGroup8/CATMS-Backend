@@ -100,19 +100,50 @@ WSGI_APPLICATION = 'CATMS__backend.wsgi.application'
 #     }
 # }
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': os.environ.get('DB_NAME', 'defaultdb'),
+#         'USER': os.environ.get('DB_USER', 'avnadmin'),
+#         'PASSWORD': os.environ.get('DB_PASSWORD'),
+#         'HOST': os.environ.get('DB_HOST'),
+#         'PORT': os.environ.get('DB_PORT'),
+#         'OPTIONS': {
+#             'ssl': {'ssl_mode': 'REQUIRED'}
+#         }
+#     }
+# }
+
+
+# Database configuration for local MySQL
+# and future Aiven deployment.
+
+DB_SSL_REQUIRED = (
+    os.getenv("DB_SSL_REQUIRED", "False").lower()
+    == "true"
+)
+
+db_options = {
+    "charset": "utf8mb4",
+}
+
+if DB_SSL_REQUIRED:
+    db_options["ssl"] = {
+        "ssl_mode": "REQUIRED"
+    }
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DB_NAME', 'defaultdb'),
-        'USER': os.environ.get('DB_USER', 'avnadmin'),
-        'PASSWORD': os.environ.get('DB_PASSWORD'),
-        'HOST': os.environ.get('DB_HOST'),
-        'PORT': os.environ.get('DB_PORT'),
-        'OPTIONS': {
-            'ssl': {'ssl_mode': 'REQUIRED'}
-        }
+    "default": {
+        "ENGINE": "django.db.backends.mysql",
+        "NAME": os.getenv("DB_NAME", "catms_local"),
+        "USER": os.getenv("DB_USER", "catms_app"),
+        "PASSWORD": os.getenv("DB_PASSWORD", ""),
+        "HOST": os.getenv("DB_HOST", "127.0.0.1"),
+        "PORT": int(os.getenv("DB_PORT", "3306")),
+        "OPTIONS": db_options,
     }
 }
+
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -138,7 +169,8 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Colombo'
 
 USE_I18N = True
 

@@ -203,9 +203,9 @@ CREATE PROCEDURE `BookAppointment`(
     -- INPUT PARAMETERS: Data passed in from the Django backend
     IN p_patient_id INT,
     IN p_time_slot_id INT,
-    IN p_type VARCHAR(50),       -- e.g., 'Consultation', 'Follow-up'
-    IN p_receptionist_id INT
+    IN p_type VARCHAR(50),
     IN p_notes TEXT,
+    IN p_receptionist_id INT,
     
     -- OUTPUT PARAMETERS: Data sent back to the Django backend
     OUT p_appointment_id INT,    -- The primary key of the new appointment
@@ -284,7 +284,7 @@ proc_label: BEGIN
     WHERE ts.time_slot_id = p_time_slot_id
       AND e.branch_id = ts.branch_id
       AND e.role = 'Doctor' AND e.status = 'Active';
-      
+
     IF v_active_doctor = 0 THEN
         SET p_error_message = 'Doctor inactive';
         ROLLBACK;

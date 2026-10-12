@@ -1,0 +1,112 @@
+{
+  "note": "SYNTHETIC LOCAL DEVELOPMENT ONLY. Password is intentionally not written to this file.",
+  "seed_date": "2026-10-11",
+  "accounts": [
+    {
+      "email": "manager.colombo@catms.test",
+      "branch_id": 1,
+      "role": "Manager"
+    },
+    {
+      "email": "reception.colombo@catms.test",
+      "branch_id": 1,
+      "role": "Receptionist"
+    },
+    {
+      "email": "reception2.colombo@catms.test",
+      "branch_id": 1,
+      "role": "Receptionist"
+    },
+    {
+      "email": "doctor.anjali@catms.test",
+      "branch_id": 1,
+      "role": "Doctor"
+    },
+    {
+      "email": "doctor.nuwan@catms.test",
+      "branch_id": 1,
+      "role": "Doctor"
+    },
+    {
+      "email": "manager.kandy@catms.test",
+      "branch_id": 2,
+      "role": "Manager"
+    },
+    {
+      "email": "reception.kandy@catms.test",
+      "branch_id": 2,
+      "role": "Receptionist"
+    },
+    {
+      "email": "doctor.harsha@catms.test",
+      "branch_id": 2,
+      "role": "Doctor"
+    },
+    {
+      "email": "doctor.shalini@catms.test",
+      "branch_id": 2,
+      "role": "Doctor"
+    },
+    {
+      "email": "manager.galle@catms.test",
+      "branch_id": 3,
+      "role": "Manager"
+    },
+    {
+      "email": "reception.galle@catms.test",
+      "branch_id": 3,
+      "role": "Receptionist"
+    },
+    {
+      "email": "doctor.malini@catms.test",
+      "branch_id": 3,
+      "role": "Doctor"
+    },
+    {
+      "email": "doctor.suren@catms.test",
+      "branch_id": 3,
+      "role": "Doctor"
+    }
+  ],
+  "counts": {
+    "branches": 3,
+    "staff": 13,
+    "doctors": 6,
+    "patients": 36,
+    "slots": 36,
+    "appointments": 82,
+    "completed": 36,
+    "completed_not_invoiced": 3,
+    "invoices": 33,
+    "payments": 40,
+    "claims": 21,
+    "active_insurance": 27
+  },
+  "claim_example_outcomes": {
+    "no_insurance": 12,
+    "submitted": 4,
+    "approved": 13,
+    "paid": 3,
+    "partially_paid": 4,
+    "rejected": 4
+  },
+  "completed_unbilled_appointment_ids": [
+    73,
+    75,
+    76
+  ],
+  "branch_ids": [
+    1,
+    2,
+    3
+  ],
+  "example_invoice_ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "tip": "For doctor appointment screens use today's date; for revenue reports filter invoice date = seed_date."
+}

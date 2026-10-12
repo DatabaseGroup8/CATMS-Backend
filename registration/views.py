@@ -43,13 +43,15 @@ def search_patients(request):
                         full_name, 
                         DOB, 
                         CalculateAge(DOB) AS age,
-                        contact_no
+                        contact_no,
+                        NIC
                     FROM Patient
-                    WHERE full_name LIKE %s 
+                    WHERE full_name LIKE %s
                        OR contact_no LIKE %s
+                       OR NIC LIKE %s
                     ORDER BY full_name ASC
                     LIMIT 50;
-                """, [search_pattern, search_pattern])
+                """, [search_pattern, search_pattern, search_pattern])
                 
                 # Step 3: Fetch all matching rows
                 rows = cursor.fetchall()
@@ -63,7 +65,8 @@ def search_patients(request):
                     # Convert date object to a standard string format securely
                     'DOB': row[2].strftime('%Y-%m-%d') if row[2] else None,
                     'age': row[3],
-                    'contact_no': row[4]
+                    'contact_no': row[4],
+                    'NIC': row[5]
                 })
 
             # Step 5: Return the payload
@@ -577,3 +580,160 @@ def update_time_slot_availability(request, slot_id):
         logger.exception('Update slot availability failed')
         return JsonResponse({'success': False,
                              'error': 'Database error'}, status=500)
+
+# ---------------------------------------------------------------------------
+# Receptionist appointment management: list, reschedule, cancel.
+# Requires database/appointment_changes.sql to have been executed once.
+# ---------------------------------------------------------------------------
+@require_GET
+@jwt_required(allowed_roles=['Receptionist'])
+def manage_appointments(request):
+    """Appointments for the signed-in receptionist's branch and selected date."""
+    try:
+        selected_date = date.fromisoformat(request.GET.get('date', ''))
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+    except (ValueError, TypeError, AttributeError):
+        return JsonResponse({'status': 'error', 'message': 'date must be YYYY-MM-DD'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT 1 FROM Employee
+                WHERE employee_id=%s AND branch_id=%s
+                  AND role='Receptionist' AND status='Active'
+            ''', [employee_id, branch_id])
+            if cursor.fetchone() is None:
+                return JsonResponse({'status': 'error', 'message': 'Access denied'}, status=403)
+
+            cursor.execute('''
+                SELECT a.appointment_id, a.patient_id, p.full_name,
+                       a.time_slot_id, a.appointment_number, a.type,
+                       a.status, a.notes, ts.available_date, ts.start_time,
+                       ts.end_time, u.full_name AS doctor_name
+                FROM Appointment a
+                JOIN Patient p ON p.patient_id = a.patient_id
+                JOIN Time_Slot ts ON ts.time_slot_id = a.time_slot_id
+                JOIN Doctor d ON d.doctor_id = ts.doctor_id
+                JOIN Employee e ON e.employee_id = d.employee_id
+                JOIN `User` u ON u.user_id = e.user_id
+                WHERE ts.branch_id = %s AND ts.available_date = %s
+                ORDER BY ts.start_time ASC, a.appointment_number ASC
+            ''', [branch_id, selected_date])
+            columns = [column[0] for column in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        for row in rows:
+            row['available_date'] = row['available_date'].isoformat()
+            row['start_time'] = str(row['start_time'])
+            row['end_time'] = str(row['end_time'])
+
+        return JsonResponse({
+            'status': 'success', 'date': selected_date.isoformat(),
+            'data': rows, 'count': len(rows)
+        })
+    except DatabaseError:
+        logger.exception('Cannot load appointments for management')
+        return JsonResponse({'status': 'error', 'message': 'Could not retrieve appointments'}, status=500)
+
+
+def _appointment_change_body(request, expect_slot=False):
+    """Validate JSON before executing privileged stored procedures."""
+    try:
+        data = json.loads(request.body)
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError('Valid JSON is required')
+    if not isinstance(data, dict):
+        raise ValueError('JSON object required')
+    reason = data.get('reason', '')
+    if not isinstance(reason, str) or len(reason) > 500:
+        raise ValueError('reason must be text of at most 500 characters')
+    if expect_slot:
+        slot = data.get('new_time_slot_id')
+        if type(slot) is not int or slot < 1:
+            raise ValueError('new_time_slot_id must be a positive integer')
+        return (slot, reason.strip())
+    if len(reason.strip()) < 3:
+        raise ValueError('Provide a cancellation reason of at least 3 characters')
+    return reason.strip()
+
+
+@csrf_exempt
+@require_POST
+@jwt_required(allowed_roles=['Receptionist'])
+def reschedule_appointment(request, appointment_id):
+    """Move only a Scheduled appointment into an open session of this branch."""
+    try:
+        new_slot_id, reason = _appointment_change_body(request, expect_slot=True)
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        return JsonResponse({'status': 'error', 'message': str(exc)}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SET @reschedule_number=NULL, @reschedule_message=NULL,
+                    @reschedule_success=0
+            ''')
+            cursor.execute('''
+                CALL RescheduleAppointment(
+                    %s,%s,%s,%s,%s,
+                    @reschedule_number,@reschedule_message,@reschedule_success
+                )
+            ''', [appointment_id, new_slot_id, employee_id, branch_id, reason])
+            while cursor.nextset():
+                pass
+            cursor.execute('''
+                SELECT @reschedule_number,@reschedule_message,@reschedule_success
+            ''')
+            queue_number, message, success = cursor.fetchone()
+    except DatabaseError:
+        logger.exception('Reschedule appointment failed')
+        return JsonResponse({'status': 'error', 'message': 'Rescheduling failed in the database'}, status=500)
+
+    if not success:
+        return JsonResponse({'status': 'error', 'message': message or 'Rescheduling rejected'}, status=409)
+    return JsonResponse({
+        'status': 'success', 'appointment_id': appointment_id,
+        'new_time_slot_id': new_slot_id, 'token_number': queue_number,
+        'message': message
+    })
+
+
+@csrf_exempt
+@require_POST
+@jwt_required(allowed_roles=['Receptionist'])
+def cancel_appointment(request, appointment_id):
+    """Soft-cancel a Scheduled appointment without deleting its record."""
+    try:
+        reason = _appointment_change_body(request)
+        branch_id = int(request.branch_id)
+        employee_id = int(request.employee_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        return JsonResponse({'status': 'error', 'message': str(exc)}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SET @cancel_message=NULL, @cancel_success=0
+            ''')
+            cursor.execute('''
+                CALL CancelAppointment(
+                    %s,%s,%s,%s,@cancel_message,@cancel_success
+                )
+            ''', [appointment_id, employee_id, branch_id, reason])
+            while cursor.nextset():
+                pass
+            cursor.execute('SELECT @cancel_message,@cancel_success')
+            message, success = cursor.fetchone()
+    except DatabaseError:
+        logger.exception('Cancel appointment failed')
+        return JsonResponse({'status': 'error', 'message': 'Cancellation failed in the database'}, status=500)
+
+    if not success:
+        return JsonResponse({'status': 'error', 'message': message or 'Cancellation rejected'}, status=409)
+    return JsonResponse({
+        'status': 'success', 'appointment_id': appointment_id,
+        'status_value': 'Cancelled', 'message': message
+    })

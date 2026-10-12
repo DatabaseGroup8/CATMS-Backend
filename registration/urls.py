@@ -29,6 +29,13 @@ urlpatterns = [
         name='book_appointment'
     ),
 
+    # Receptionist appointment rescheduling and cancellation.
+    path('appointments/manage/', views.manage_appointments, name='manage_appointments'),
+    path('appointments/<int:appointment_id>/reschedule/',
+         views.reschedule_appointment, name='reschedule_appointment'),
+    path('appointments/<int:appointment_id>/cancel/',
+         views.cancel_appointment, name='cancel_appointment'),
+
     path(
         'schedules/daily/',
         views.get_daily_schedule,
