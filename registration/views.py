@@ -22,65 +22,113 @@ from django.views.decorators.http import require_http_methods
 logger = logging.getLogger(__name__)
 
 
-@csrf_exempt
-@jwt_required(allowed_roles=['Receptionist', 'Doctor'])
+@require_GET
+@jwt_required(allowed_roles=['Receptionist', 'Doctor', 'Manager'])
 def search_patients(request):
-    # Step 1: Enforce GET method since we are reading data
-    if request.method == 'GET':
-        # Grab the search term from the URL (e.g., /api/registration/search/?q=Kamal)
-        # Defaults to an empty string if no search term is provided
-        search_query = request.GET.get('q', '')
-        
-        try:
-            with connection.cursor() as cursor:
-                # Add SQL wildcards (%) to find partial matches anywhere in the string
-                search_pattern = f"%{search_query}%"
-                
-                # Step 2: Execute raw SQL with the LIKE operator using your exact schema
-                cursor.execute("""
-                    SELECT 
-                        patient_id, 
-                        full_name, 
-                        DOB, 
-                        CalculateAge(DOB) AS age,
-                        contact_no,
-                        NIC
-                    FROM Patient
-                    WHERE full_name LIKE %s
-                       OR contact_no LIKE %s
-                       OR NIC LIKE %s
-                    ORDER BY full_name ASC
-                    LIMIT 50;
-                """, [search_pattern, search_pattern, search_pattern])
-                
-                # Step 3: Fetch all matching rows
-                rows = cursor.fetchall()
-                
-            # Step 4: Map the raw tuple data into a JSON-friendly list of dictionaries
-            patients_list = []
-            for row in rows:
-                patients_list.append({
+    """List accessible patients A-Z, with optional live search and pagination.
+
+    Receptionists keep existing system-wide search; Managers remain restricted
+    to patients eligible for insurance assignment in their branch; Doctors
+    see only patients assigned to their appointments.
+    """
+    search_query = request.GET.get('q', '').strip()
+    try:
+        page = int(request.GET.get('page', 1))
+    except (ValueError, TypeError):
+        return JsonResponse({
+            'status': 'error', 'message': 'page must be a positive integer.'
+        }, status=400)
+    if page < 1:
+        return JsonResponse({
+            'status': 'error', 'message': 'page must be a positive integer.'
+        }, status=400)
+
+    page_size = 100
+    offset = (page - 1) * page_size
+    pattern = f'%{search_query}%'
+
+    # When search is empty the LIKE '%%' matches ordinary non-NULL strings.
+    filters = """
+        WHERE (
+            p.full_name LIKE %s
+            OR p.contact_no LIKE %s
+            OR p.NIC LIKE %s
+        )
+    """
+    params = [pattern, pattern, pattern]
+
+    if request.user_role == 'Manager':
+        # Preserve the earlier insurance policy search authorization rule.
+        filters += """
+            AND (
+                p.registered_branch_id = %s
+                OR EXISTS (
+                    SELECT 1
+                    FROM Appointment a
+                    JOIN Time_Slot ts ON ts.time_slot_id = a.time_slot_id
+                    WHERE a.patient_id = p.patient_id
+                      AND ts.branch_id = %s
+                )
+            )
+        """
+        params.extend([request.branch_id, request.branch_id])
+    elif request.user_role == 'Doctor':
+        filters += """
+            AND EXISTS (
+                SELECT 1
+                FROM Appointment a
+                JOIN Time_Slot ts ON ts.time_slot_id = a.time_slot_id
+                JOIN Doctor d ON d.doctor_id = ts.doctor_id
+                WHERE a.patient_id = p.patient_id
+                  AND d.employee_id = %s
+            )
+        """
+        params.append(request.employee_id)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT COUNT(*) FROM Patient p ' + filters, params)
+            total = cursor.fetchone()[0]
+            cursor.execute("""
+                SELECT
+                    p.patient_id,
+                    p.full_name,
+                    p.DOB,
+                    CalculateAge(p.DOB) AS age,
+                    p.contact_no,
+                    p.NIC
+                FROM Patient p
+            """ + filters + """
+                ORDER BY p.full_name ASC, p.patient_id ASC
+                LIMIT %s OFFSET %s
+            """, params + [page_size, offset])
+            rows = cursor.fetchall()
+
+        return JsonResponse({
+            'status': 'success',
+            'results_count': len(rows),
+            'total_count': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': max(1, (total + page_size - 1) // page_size),
+            'data': [
+                {
                     'patient_id': row[0],
                     'full_name': row[1],
-                    # Convert date object to a standard string format securely
-                    'DOB': row[2].strftime('%Y-%m-%d') if row[2] else None,
+                    'DOB': row[2].isoformat() if row[2] else None,
                     'age': row[3],
                     'contact_no': row[4],
                     'NIC': row[5]
-                })
-
-            # Step 5: Return the payload
-            return JsonResponse({
-                'status': 'success',
-                'results_count': len(patients_list),
-                'data': patients_list
-            }, status=200)
-
-        except Exception as e:
-            return JsonResponse({'status': 'critical_error', 'message': str(e)}, status=500)
-            
-    return JsonResponse({'status': 'error', 'message': 'Only GET method is allowed'}, status=405)
-
+                }
+                for row in rows
+            ]
+        })
+    except DatabaseError:
+        logger.exception('Patient directory query failed')
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Unable to load patient records.'
+        }, status=500)
 
 
 @csrf_exempt

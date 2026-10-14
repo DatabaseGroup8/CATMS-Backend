@@ -158,6 +158,72 @@ def get_patient_history(request, patient_id):
 
 @jwt_required(allowed_roles=['Doctor'])
 @require_GET
+def search_my_consultations(request):
+    """Search finalized consultations by patient name, only for the logged-in doctor."""
+    query = (request.GET.get('q') or '').strip()
+    if len(query) < 2:
+        return JsonResponse({'status': 'success', 'consultations': []})
+    if len(query) > 100:
+        return JsonResponse({'status': 'error', 'message': 'Search must be 100 characters or fewer'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    cr.consultation_rec_id,
+                    cr.appointment_id,
+                    p.patient_id,
+                    p.full_name AS patient_name,
+                    ts.available_date AS visit_date,
+                    TIME_FORMAT(ts.start_time, '%%H:%%i') AS start_time,
+                    a.type AS visit_type,
+                    LEFT(mr.diagnosis, 140) AS diagnosis_preview
+                FROM consultation_record cr
+                JOIN Appointment a ON a.appointment_id = cr.appointment_id
+                JOIN Patient p ON p.patient_id = a.patient_id
+                JOIN Medical_record mr ON mr.medical_record_id = cr.medical_record_id
+                JOIN Time_Slot ts ON ts.time_slot_id = a.time_slot_id
+                JOIN Doctor d ON d.doctor_id = ts.doctor_id
+                JOIN Employee e ON e.employee_id = d.employee_id
+                WHERE p.full_name LIKE %s
+                  AND e.employee_id = %s
+                  AND e.branch_id = %s
+                  AND ts.branch_id = e.branch_id
+                  AND e.role = 'Doctor'
+                  AND e.status = 'Active'
+                ORDER BY ts.available_date DESC,
+                         ts.start_time DESC,
+                         cr.consultation_rec_id DESC
+                LIMIT 50
+            """, [f'%{query}%', request.employee_id, request.branch_id])
+            rows = cursor.fetchall()
+
+        return JsonResponse({
+            'status': 'success',
+            'consultations': [
+                {
+                    'consultation_rec_id': row[0],
+                    'appointment_id': row[1],
+                    'patient_id': row[2],
+                    'patient_name': row[3],
+                    'visit_date': row[4].isoformat() if row[4] is not None else None,
+                    'start_time': row[5],
+                    'visit_type': row[6],
+                    'diagnosis_preview': row[7],
+                }
+                for row in rows
+            ],
+        })
+    except DatabaseError:
+        logger.exception('Search doctor consultations failed')
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Unable to search consultations',
+        }, status=500)
+
+
+@jwt_required(allowed_roles=['Doctor'])
+@require_GET
 def get_consultation_summary(request):
     """Return consultation to the doctor assigned to this patient's appointment."""
     try:

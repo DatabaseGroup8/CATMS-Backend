@@ -14,6 +14,7 @@ urlpatterns = [
     # GET: /api/clinical/get-consultation-summary/?consultation_rec_id=5
     # Retrieves the details and duration of a specific consultation
     path('get-consultation-summary', views.get_consultation_summary, name = 'get_consultation_summary'),
+    path('consultations/search/', views.search_my_consultations, name='search_my_consultations'),
     
     
     # POST: /api/clinical/conditions/category/add/
